@@ -1,0 +1,586 @@
+Title: Solving a Million-Step LLM Task with Zero Errors
+
+URL Source: https://arxiv.org/html/2511.09030v1
+
+Published Time: Thu, 13 Nov 2025 01:26:57 GMT
+
+Markdown Content:
+Elliot Meyerson 
+
+Cognizant AI Lab &Giuseppe Paolo 
+
+Cognizant AI Lab &Roberto Dailey 
+
+Cognizant AI Lab &Hormoz Shahrzad 
+
+UT Austin & Cognizant AI Lab &Olivier Francon 
+
+Cognizant AI Lab &Conor F. Hayes 
+
+Cognizant AI Lab &Xin Qiu 
+
+Cognizant AI Lab &Babak Hodjat 
+
+Cognizant AI Lab &Risto Miikkulainen 
+
+UT Austin & Cognizant AI Lab
+
+###### Abstract
+
+LLMs have achieved remarkable breakthroughs in reasoning, insights, and tool use, but chaining these abilities into extended processes at the scale of those routinely executed by humans, organizations, and societies has remained out of reach. The models have a persistent error rate that prevents scale-up: for instance, recent experiments in the Towers of Hanoi benchmark domain showed that the process inevitably becomes derailed after at most a few hundred steps. Thus, although LLM research is often still benchmarked on tasks with relatively few dependent logical steps, there is increasing attention on the ability (or inability) of LLMs to perform long range tasks. This paper describes MAKER, the first system that successfully solves a task with over one million LLM steps with zero errors, and, in principle, scales far beyond this level. The approach relies on an extreme decomposition of a task into subtasks, each of which can be tackled by focused microagents. The high level of modularity resulting from the decomposition allows error correction to be applied at each step through an efficient multi-agent voting scheme. This combination of extreme decomposition and error correction makes scaling possible. Thus, the results suggest that instead of relying on continual improvement of current LLMs, massively decomposed agentic processes (MDAPs) may provide a way to efficiently solve problems at the level of organizations and societies.
+
+![Image 1: [Uncaptioned image]](https://arxiv.org/html/x1.png)
+
+Figure 1: _Orthogonal directions to scaling AI._ The predominent approach to scaling AI is to make more and more ‘intelligent’ base LLMs. This paper introduces a framework and implementation of an orthogonal approach: MAKER, which solves the full task (described in Section[4](https://arxiv.org/html/2511.09030v1#S4 "4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors")) with zero errors. In this figure, API cost per output token (as of 10/2025, from openai, anthropic, and together) is used as a proxy for intelligence, and consecutive error-free steps for base LLMs are computed from their per-step error rate (Figure[6](https://arxiv.org/html/2511.09030v1#S4.F6 "Figure 6 ‣ 4.2 Estimating single-step success rates ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors")b). Appendix[A](https://arxiv.org/html/2511.09030v1#A1 "Appendix A Log Scale Version of Figure 1 ‣ Solving a Million-Step LLM Task with Zero Errors") gives a log scale version of the plot. 
+
+1 Introduction
+--------------
+
+Technological achievements of advanced societies are built on the capacity to reliably execute tasks with vast numbers of steps. Whether constructing a skyscraper, airplane, particle accelerator, or iPhone (which relies on tangible contributions from ≈1\approx 1 B people in an enormous supply chain spanning hundreds of suppliers across multiple countries [wikipedia_apple_supply_chain, apple_supplier_list]), running a hospital or medical research organization, processing tax returns and delivering social benefits at a national scale, or even something as seemingly simple as producing a loaf of bread [VegPatchKitchen_BreadStages], the precise execution of detailed plans and policies is critical to producing high-value outcomes and maintaining societal trust, as the impact of an error in such tasks can range from inconvenience to economic harm to physical harm to death.
+
+Large language models (LLMs) are increasingly inserted into large and complex real-world processes like these. To maximize the benefit of using LLMs in these roles, it is critical to understand the limits of where and how LLMs can be reliably deployed. This paper focuses on the question of how/whether LLMs can execute large tasks with extreme precision, e.g., when a 1% per-step error rate is not acceptable.
+
+This question is investigated by applying LLM-based reasoning to a task whose solution requires more than one million LLM steps with zero errors. The Towers of Hanoi problem, recently proposed as a benchmark for LLM reasoning [shojaee2025illusion], provides such a task. Most benchmarks for evaluating the quality of LLMs use independent examples, each requiring not many more than a few dependent logical execution steps [patel2024multistep], with a resulting score like accuracy averaged over all examples. Such a benchmark might be considered solved if the accuracy is 99%. However, a system with a 1% per-step error rate is expected to fail after only 100 steps of a million-step task. Therefore, solving a million-step task with zero errors requires a fundamentally different approach.
+
+Such an approach is proposed in this paper: Massively decomposed agentic processes (MDAPs). The main contributions of this paper are as follows:
+
+*   •
+A design of the MDAP framework, which consists of three core components: (1) decomposition into minimal subtasks; (2) error correction based on subtask-level voting; and (3) red-flagging to reduce correlated errors.
+
+*   •
+A formalization of this framework that yields scaling laws, e.g., how probability of success and expected cost change w.r.t. the number of total steps and level of task decomposition. Under this formalization we find effective scaling under extreme decomposition and infeasibility without it.
+
+*   •
+The empirical applications of the framework to successfully solve a task with over one million steps with zero errors. One main takeaway is that ‘state-of-the-art’ reasoning models are not required; relatively small non-reasoning models suffice.
+
+This paper provides a first implementation of the MDAP framework: MAKER (for M aximal A gentic decomposition, first-to-ahead-by-K E rror correction, and R ed-flagging), and evaluates it in the Towers of Hanoi domain. MAKER is a system of _agents_ in which each agent is assigned a single subtask to solve. In other words, the _role_ of each agent is defined by the subtask it is assigned. As advocated for in prior work [meyersonposition], by avoiding anthropomorphizing agents (i.e., by assigning them human-level roles) and instead assigning them tiny ‘micro-roles’, it is possible to exploit the inherent machine-like nature of LLMs. It may then be possible to take advantage of the kinds of error-correction methods that have been essential to scaling in many domains of computing, i.e., by assigning multiple agents to independently solve the same subtask.
+
+The results demonstrate an instance of multi-agent advantage (akin to quantum advantage [harrow2017quantum]), that is, a solution to a problem that is not solvable by a monolithic single-agent system. This demonstration sets the stage for a new paradigm of scaling AI: instead of relying on continual improvement of simple underlying LLMs, more powerful AI is achieved through massively decomposed agentic processes (MDAPs).
+
+2 Background
+------------
+
+While current LLM agents suffer from catastrophic errors on large tasks, there may be an opportunity for a multi-agent approach that decomposes the tasks into small steps. Error correction is critical for this process, as it is in many complex digital and biological systems.
+
+### 2.1 Large Agentic LLM Tasks
+
+As large language models have improved, increasing consideration has been given towards real world economic tasks that require multi-step, long horizon reasoning [kwa2025]. Research in this direction has repeatedly confirmed an inherent property of LLMs: their performance deteriorates significantly (and often exponentially) with the length of the task horizon, regardless of task complexity [schaeffer2023, Dziriexp]. This observation has led to the recent focus on the ability (and failure) of LLMs to _execute_, i.e., failing to complete many-step tasks, even when a correct plan to follow is explicitly provided to them [sinha2025]. While this work identified a fundamental liability of LLMs in long-horizon execution, it also presented an opportunity: Even small improvements in individual subtask performance could lead to exponential improvements in achievable task lengths [sinha2025].
+
+At the same time, recent theoretical work has claimed that decomposing large tasks into the smallest possible subtasks can have substantial efficiency benefits [meyersonposition]. The rise of decomposing tasks into subtasks solvable by focused “small language model” (SLM) agents in industry, motivated by both reliability and cost [belcak2025smalllanguagemodelsfuture], as well as the burgeoning study of multi-agent LLM systems in academia [guo2024largelanguagemodelbased, wang2024llm_agents_survey], provides evidence for the practicality of this idea. This paper continues this line of work. It is based on the premise that tasks should be broken up into the smallest possible elements, so that an LLM agent can focus on them one step at a time, improving per step error rate, and thus enabling scaling, reliability, and efficiency in the limit. Critical to the feasibility of such an approach is the granularity of the decomposition, i.e., what defines a single _step_. Since this paper focuses on execution, it is assumed the definition of step is given a priori; an orthogonal open question is how to automatically discover optimal decompositions [russell1991principles, horvitz2021ideal]. Informally, the main condition required for the methods in Section[3](https://arxiv.org/html/2511.09030v1#S3 "3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") to work is that steps are small enough that, for each step, a correct solution is likely to be sampled, and no incorrect solution is more likely.
+
+Now, when an agentic system is applied to a long and expensive multi-step task, there is a natural desire to extract relevant information from responses even when formatted incorrectly. As a result, substantial work has gone in to generating correctly structured output from an LLM. Grammar-constrained (JSON/CFG) decoding reliably enforces structure and often improves downstream pipelines [geng2025jsonschemabench, openai2024structured], LLMs are fine-tuned to get the format right [grattafiori2024llama3herdmodels, qiu2025evolution], sampling is performed in a way that only tokens respecting the required format are selected [chen2022relation], and Python packages are developed dedicated to fixing an LLM’s output post-hoc so that it can be parsed in a meaningful way [pydantic, json_repair, guardrails_ai]. However, as described in Section[3.3](https://arxiv.org/html/2511.09030v1#S3.SS3 "3.3 Red-Flagging: Recognizing Signs of Unreliability ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors"), when an agent makes an error in the output format, this error may indicate that its other reasoning is wrong as well. When a task has been broken into tiny pieces, this property may be exploited to mitigate errors.
+
+### 2.2 Error Correction
+
+Error correction is a critical capability across many important areas of computing, including communication [clark1981error, lin2004error], memory storage [chen1984error], and quantum computing [roffe2019quantum]. Error correction makes it possible to pretend that digital communication and classical computation are deterministic, when in fact, single bits are getting lost and flipped all the time [normand1996single, wang2008single]. Similarly, improved error correction is the single most important ingredient to achieving scalable quantum computing [fowler2012surface_code]. In biological systems, error correction is critical to large processes growing and persisting over time. Error correction is necessary both at the population level, e.g., through the error-correcting effects of recombination [otto2002resolving], and at the individual level, e.g., the cancer-fighting ability of mammals. At the individual level, it correlates highly with lifespan and body size (i.e., scale), with elephants showing the most impressive resistance [abegglen2015potential]. LLMs now serve as the basis of another substrate of computing, _linguistic computing_, whose constituent processes are _language-based algorithms_ (LbAs) [meyersonposition, chen2024design]. It should then come as no surprise that error correction is critical to achieving LbAs that scale, mitigating for the inherent nondeterminism that results from producing language by pulling from a probability distribution.
+
+Many possible LbA error correction methods can be derived from instances in other fields [shannon1948]. One way to reduce errors is for an LLM to reflect on its output and explicitly correct any error it sees [manakul2023selfcheckgpt]. Another approach is to quantify and exploit LLM uncertainty explicitly [xue2023dynamicvoting, xin2024semantic]. For example, work on _semantic density_ shows that the semantic content most consistently sampled from an LLM for a given prompt is more likely to be correct than a greedy decoding [xin2024semantic]. This promise of semantic consistency in sampling makes a third, simpler, approach possible: voting, or _ensembling_, which has been a core machine learning technique for decades [opitz1999popular, mienye2022survey, ganaie2022ensemble], and is now commonly used to boost the accuracy of LLM-based systems [Trad2025voting]. To date, ensembling has mostly been implemented in LLMs at an action level far above that of a single minimal step. For example, state-of-the-art LLM-based coding systems often use a majority vote of outputs of complete programs that are each a candidate solution to a coding challenge [li2022alphacode, wang2022selfconsistency]. However, when scaling to tasks with thousands or millions of dependent steps, the level of granularity at which error correction is applied is critical, as will be shown in Section[3](https://arxiv.org/html/2511.09030v1#S3 "3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors").
+
+### 2.3 Motivating Challenge Domain: Towers of Hanoi
+
+Towers of Hanoi was recently introduced as a test domain for investigating the capabilities and limitations of state-of-the-art LLM reasoning models [shojaee2025illusion]. This benchmark is based on the classic game in which there are three pegs and D D disks, and the goal is to move all disks from the first to the third peg, moving only one disk at a time, and maintaining the condition that a larger disk never sits atop a smaller one [hinz2013tower]. In the benchmark, an LLM system is asked to produce a sequence of moves (m i=[d i,s i,t i])i=1 n(m_{i}=[d_{i},s_{i},t_{i}])_{i=1}^{n} whose execution completes the task, where the i i th move is executed by moving disk number d i∈{1,…,D}d_{i}\in\{1,...,D\} from source peg s i∈{0,1,2}s_{i}\in\{0,1,2\} to target peg t i∈{0,1,2}t_{i}\in\{0,1,2\}. The problem scales naturally to enormous numbers of required steps by simply adding more disks, since the optimal number of steps to complete the task is 2 D−1 2^{D}-1. For example, solving Towers of Hanoi with ten disks takes just over a thousand steps, and with twenty disks just over a million steps. In its most famous (mythological) incarnation, monks work continuously on an instance with 64 disks, which is expected to take around 585 billion years, at which point the universe will end [moscovich20011].
+
+Performance of state-of-the-art LLMs degrades catastrophically on this benchmark: They are able to complete the task with a high success rate up until five or six disks, after which the success rate plummets to zero [shojaee2025illusion]. What this degradation means with respect to whether or to what extent an LLM is really ‘thinking’ or ‘reasoning’ is up for philosophical debate and is outside the scope of this paper [varela2025rethinking, khan2025comment, opus2025illusion]. However, this result made it clear that the reliability of state-of-the-art LLMs is fundamentally limited: If they need to complete every step correctly in order to solve a task, after a certain number of steps they will almost surely fail as a result of an underlying propensity to make errors, even when the answer should be obvious. While an error rate of 1-in-1,000 seems low, and would be great on a traditional LLM benchmark, on a task that requires successful execution of thousands of steps in a row, such a system results in inevitable failure.
+
+Two critiques of Towers of Hanoi as a benchmark should be addressed upfront. First, one could argue that it is not an ideal LLM task since one could write code to solve the problem, and optimal algorithms are known [hinz2013tower]. True, but producing solutions is not the point: instead, the domain provides an ideal testbed for investigating the capacity of LLM-based systems to scale their inherent intelligence to increasingly large numbers of steps. Second, one could argue that this problem is too hard, since large real-world tasks might allow for a handful of errors without catastrophic results [simon1957models]. However, focusing on a case where no error can be tolerated forces us to pursue the elimination of any kind of error that is likely to arise on a long timescale, and this focus can lead to insights and practical methods that might otherwise be overlooked. There also are real-world safety-critical systems where no error can be tolerated [kremer1993ring]. Therefore, as LLM-based systems become ubiquitous in real-world decision making processes, it is essential these systems can reliably make decisions without error. Thus, the problem provides an ideal testbed for developing techniques that will be critical to scaling LLM-based systems to one million steps and beyond.
+
+Algorithm 1 generate_solution
+
+1:Input x o,M,k x_{o},M,k
+
+2:Initialize A←[]A\leftarrow[\,]⊳\triangleright Action list
+
+3:Initialize x←x o x\leftarrow x_{o}
+
+4:for s s steps do
+
+5:a,x←do_voting​(x,M,k)a,x\leftarrow\text{do\_voting}(x,M,k)
+
+6: Append a a to A A
+
+7:end for
+
+8:return A A
+
+Algorithm 2 do_voting
+
+1:Input: x,M,k x,M,k
+
+2:V←{v:0​∀v}V\leftarrow\{v:0\ \forall v\}⊳\triangleright Vote counts
+
+3:while True do
+
+4:y←get_vote​(x,M)y\leftarrow\text{get\_vote}(x,M)
+
+5:V​[y]=V​[y]+1 V[y]=V[y]+1
+
+6:if V​[y]≥k+max v≠y⁡V​[v]V[y]\geq k+\max_{v\neq y}V[v]then
+
+7:return y y
+
+8:end if
+
+9:end while
+
+Algorithm 3 get_vote
+
+1:Input x,M x,M
+
+2:while True do
+
+3:r∼(M∘ϕ)​(x)r\sim(M\circ\phi)(x)
+
+4:if r r has no red flags then
+
+5:return ψ a​(r),ψ x​(r)\psi_{a}(r),\psi_{x}(r)
+
+6:end if
+
+7:end while
+
+Figure 2: _Core Components of MAKER._ (1) Maximal Agentic Decomposition (MAD; Section[3.1](https://arxiv.org/html/2511.09030v1#S3.SS1 "3.1 Maximal Agentic Decomposition ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors")): By breaking a task with s s steps into s s subtasks, each agent can focus on a single step; (2) First-to-ahead-by-k k Voting (Section[3.2](https://arxiv.org/html/2511.09030v1#S3.SS2 "3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors")): The modularity resulting from MAD makes error correction at the subtask level effective and scalable; (3) Red-flagging (Section[3.3](https://arxiv.org/html/2511.09030v1#S3.SS3 "3.3 Red-Flagging: Recognizing Signs of Unreliability ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors")): Reliability can be further boosted by discarding any response r r with high-level indicators of risk. Together these methods enable scaling to solving a task with over one million steps with zero errors.
+
+3 Methods
+---------
+
+MAKER involves three main ingredients (Figure[2](https://arxiv.org/html/2511.09030v1#S2.F2 "Figure 2 ‣ 2.3 Motivating Challenge Domain: Towers of Hanoi ‣ 2 Background ‣ Solving a Million-Step LLM Task with Zero Errors")): (1) Decomposing a task into the smallest possible subtasks; (2) exploiting the modularity of such a decomposition to implement efficient error correction; and (3) “red-flagging” LLM outputs, i.e., discarding outputs whose structure suggests increased risk of errors, particularly correlated errors. These three components are detailed in the next three subsections. Together, they make it possible to efficiently increase the probability of success across all steps to a level such that the entire process is likely to succeed.
+
+### 3.1 Maximal Agentic Decomposition
+
+In a long-horizon agentic task with s s steps, the goal of an LLM-based system is to produce a sequence of actions a 1,…,a s a_{1},\ldots,a_{s} that yields a target output y y given the initial input x x[sinha2025]. This paper is concerned with the following question: _How does the decomposition of the task into subtasks affect its solvability?_
+
+The s s-step task can be decomposed into subtasks, with the granularity of the decomposition defined by the number of steps m m per subtask. Subtasks can then be solved by separate calls to LLM _agents_, where a templating function ϕ\phi maps the input and specification of a subtask to a prompt for an LLM M M, an extractor ψ a\psi_{a} parses actions from the LLM’s output response r r, and a second extractor ψ x\psi_{x} parses information from r r to include in the input to the next subtask. Let x 0=x x_{0}=x. A solution to the full task can then be sampled recursively:
+
+r i+1\displaystyle r_{i+1}∼M​(ϕ​(x i)),\displaystyle\sim M(\phi(x_{i})),(1)
+a m​i+1,…,a m​i+m\displaystyle a_{mi+1},\ldots,a_{mi+m}=ψ a​(r i+1),\displaystyle=\psi_{a}(r_{i+1}),(2)
+x i+1\displaystyle x_{i+1}=ψ x​(r i+1)∀i=0,…,s m−1.\displaystyle=\psi_{x}(r_{i+1})\ \ \ \forall i=0,\ldots,\frac{s}{m}-1.(3)
+
+Of particular interest are the two extreme cases: the case of no decomposition, i.e., m=s m=s, termed _single-agent_:
+
+a 1,…,a s∼(ψ a∘M∘ϕ)​(x);a_{1},\ldots,a_{s}\sim(\psi_{a}\circ M\circ\phi)(x);(4)
+
+and the case of _maximal agentic decomposition_ (MAD), i.e., m=1 m=1:
+
+r i+1\displaystyle r_{i+1}∼M​(ϕ​(x i)),\displaystyle\sim M(\phi(x_{i})),(5)
+a i+1\displaystyle a_{i+1}=ψ a​(r i+1),\displaystyle=\psi_{a}(r_{i+1}),(6)
+x i+1\displaystyle x_{i+1}=ψ x​(r i+1)∀i=0,…,s−1.\displaystyle=\psi_{x}(r_{i+1})\ \ \ \forall i=0,\ldots,s-1.(7)
+
+Because LLMs are auto-regressive, when generating the i i th action, a single agent M M is increasingly burdened by the context produced in generating actions a 1,…,a i−1 a_{1},\ldots,a_{i-1}. Therefore, as the context increases, its outputs become increasingly unreliable [du2025contextlengthhurtsllm]. However with MAD, an agent’s context is limited to an amount of information sufficient to execute its single assigned step, allowing it to focus on its assigned role and avoid confusion that can creep in from irrelevant context. This focus also allows the use of smaller LLMs with more limited context sizes.
+
+One might argue that this decomposition might improve the reliability of any given LLM call, but by decomposing the task into s s independent calls, there are now s s possible points of failure, instead of just one. That is, there are s s opportunities for a weakest link to compromise the entire system, since for a correct action sequence a 1∗,…,a s∗a_{1}^{*},\ldots,a_{s}^{*}, the probability of generating it without error is exponentially decaying as the number of steps increases:
+
+p​(a 1∗,…,a s∗)=∏i=0 s−1 p​((ψ a∘M∘ϕ)​(x i)=a i+1∗).p(a_{1}^{*},\ldots,a_{s}^{*})=\prod_{i=0}^{s-1}p\left((\psi_{a}\circ M\circ\phi)(x_{i})=a_{i+1}^{*}\right).(8)
+
+First, note that a single long LLM call also suffers from a form of exponentially decaying probability of correctness [Dziriexp]. Second, and more importantly, the modularity induced through maximal decomposition allows for a form of effective and efficient error mitigation and unreliability detection (“red-flagging”) that is not possible with a single large call. These capabilities will be described in the next two subsections.
+
+### 3.2 First-to-ahead-by-k k Voting and Scaling Laws
+
+For simplicity, the error correction in this paper uses the statistical power of independent samples from a stochastic process (here an LLM). To determine a winner from these samples, a _first-to-ahead-by-k k_ voting process is used, motivated by the optimality of such an approach in the sequential probability ratio test (SPRT) [wald2004sequential, lee2025consol]. Many improvements are possible beyond this first implementation. For example, in the experiments in this paper, exact matches between actions are required, but in general, a classification function could be used to determine semantically equivalent outputs (e.g., implemented by an LLM, see Section[5](https://arxiv.org/html/2511.09030v1#S5 "5 Discussion and Future Work ‣ Solving a Million-Step LLM Task with Zero Errors")).
+
+Concretely, given an LLM M M, candidate samples are drawn for a subtask (Eq.[2](https://arxiv.org/html/2511.09030v1#S3.E2 "In 3.1 Maximal Agentic Decomposition ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors")&[3](https://arxiv.org/html/2511.09030v1#S3.E3 "In 3.1 Maximal Agentic Decomposition ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors")) until one has been sampled k k times more than any other (Alg.[2](https://arxiv.org/html/2511.09030v1#alg2 "Algorithm 2 ‣ Figure 2 ‣ 2.3 Motivating Challenge Domain: Towers of Hanoi ‣ 2 Background ‣ Solving a Million-Step LLM Task with Zero Errors")). This process is a generalization of the classic gambler’s ruin problem [bernoulli1713ars], but with simultaneous dependent races between all pairs of candidates [ross2025first]. Since there is no known closed form for this general case, the analysis is simplified by assuming the worst case, i.e., that a correct candidate with probability p p races against a single alternative with probability 1−p 1-p. If p>0.5 p>0.5, the probability that the correct candidate gets selected through this process is
+
+p​(a i=a∗)=1−(1−p p)k 1−(1−p p)2​k=p k p k+(1−p)k=1 1+(1−p p)k,p(a_{i}=a^{*})=\frac{1-\left(\frac{1-p}{p}\right)^{k}}{1-\left(\frac{1-p}{p}\right)^{2k}}=\frac{p^{k}}{p^{k}+(1-p)^{k}}=\frac{1}{1+\Big(\frac{1-p}{p}\Big)^{k}},(9)
+
+and there exists some k k such that this voting process will result in the correct candidate winning with probability 1−ϵ 1-\epsilon, for any given error rate ϵ∈(0,1)\epsilon\in(0,1).
+
+![Image 2: Refer to caption](https://arxiv.org/html/x2.png)
+
+(a) 
+
+![Image 3: Refer to caption](https://arxiv.org/html/x3.png)
+
+(b) 
+
+Figure 3: _MAKER error-free solve rate scaling laws resulting from Eq.[13](https://arxiv.org/html/2511.09030v1#S3.E13 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors")_. (a a) For a task with one million steps, MAKER, with first-to-ahead-by-k k error correction enables high probability zero-error solutions for practical values of k k, even as the base per-step error rate approaches 1-in-10; (b b) For the lower per-step error rates, in theory even a low k k allows scaling far beyond one million steps.
+
+Now, suppose that the task requires s s total steps to complete, with an inherent per-step success rate p p, a decomposition level given by the number of steps per subtask m m, and suppose that a margin of k k votes is required to decide an action for each subtask. Again, assume that the correct solution for each subtask races against only a single most-likely alternative. Note that this assumption is much more favorable to larger values of m m, i.e., less decomposition, since a most likely alternative captures a vanishing proportion of the total alternative (incorrect) probability mass as m m grows. Let p vote p_{\textrm{vote}} be the probability of sampling a correct vote for a subtask, p alt p_{\textrm{alt}} the probability of sampling the alternative, p sub p_{\textrm{sub}} the probability that the voting procedure succeeds on a subtask, and p full p_{\textrm{full}} the probability that it succeeds on all subtasks, i.e., that the full task is completed successfully. Then,
+
+p vote=p m,\displaystyle p_{\textrm{vote}}=p^{m},(10)
+p alt=(1−p)​p m−1,\displaystyle p_{\textrm{alt}}=(1-p)p^{m-1},(11)
+p sub=p vote k p vote k+p alt k=p m​k p m​k+((1−p)​p m−1)k=1 1+(1−p p)k,\displaystyle p_{\textrm{sub}}=\frac{p_{\textrm{vote}}^{k}}{p_{\textrm{vote}}^{k}+p_{\textrm{alt}}^{k}}=\frac{p^{mk}}{p^{mk}+((1-p)p^{m-1})^{k}}=\frac{1}{1+\Big(\frac{1-p}{p}\Big)^{k}},(12)
+p full=p sub s m=(1+(1−p p)k)−s m,\displaystyle p_{\textrm{full}}=p_{\textrm{sub}}^{\frac{s}{m}}=\Bigg(1+\bigg(\frac{1-p}{p}\bigg)^{k}\Bigg)^{-\frac{s}{m}},(13)
+
+where Eq.[12](https://arxiv.org/html/2511.09030v1#S3.E12 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") comes from plugging p vote p_{\textrm{vote}} and p alt p_{\textrm{alt}} into the hitting probability formula for gambler’s ruin [ross2025first]. Figure[3](https://arxiv.org/html/2511.09030v1#S3.F3 "Figure 3 ‣ 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") uses Eq.[13](https://arxiv.org/html/2511.09030v1#S3.E13 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") to illustrate how a high probability of overall success p full p_{\textrm{full}} can be maintained by increasing k k in the case of m=1 m=1, i.e. in a maximal decomposition.
+
+Given Eq.[13](https://arxiv.org/html/2511.09030v1#S3.E13 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors"), the expected cost of solving the entire task with a given level of reliability, i.e., given a target probability of overall success t t, can be computed. First, the minimal k k that yields success probability of at least t t is
+
+k min=⌈ln⁡(t−m/s−1)ln⁡(1−p p)⌉=Θ​(ln⁡s).k_{\min}\;=\;\left\lceil\frac{\ln\left(t^{-m/s}-1\right)}{\ln\left(\frac{1-p}{p}\right)}\right\rceil\;=\;\Theta(\ln s).(14)
+
+The detailed derivation is included in Appendix[B](https://arxiv.org/html/2511.09030v1#A2 "Appendix B Additional Derivations ‣ Solving a Million-Step LLM Task with Zero Errors"). Notably, k min k_{\min} grows logarithmically with s s no matter the decomposition level. Figure[4(a)](https://arxiv.org/html/2511.09030v1#S3.F4.sf1 "In Figure 4 ‣ 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") shows how k min k_{\min} scales with the number of steps when using MAD, i.e., when m=1 m=1.
+
+![Image 4: Refer to caption](https://arxiv.org/html/x4.png)
+
+(a) 
+
+![Image 5: Refer to caption](https://arxiv.org/html/x5.png)
+
+(b) 
+
+Figure 4: _MAKER cost scaling laws resulting from Eqs.[14](https://arxiv.org/html/2511.09030v1#S3.E14 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") and [18](https://arxiv.org/html/2511.09030v1#S3.E18 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors")._ (a a) The value of k k required in first-to-ahead-by-k k voting to maintain a 0.9 solution probability for the full task increases logarithmically with the number of steps in the task; (b b) The corresponding expected cost of running the system increases log-linearly. These plots illustrate the scalability of MAKER, in theory, to millions of steps and beyond. 
+
+It is now possible to write down the expected cost in terms of calls to LLM primitives, i.e., perform AALPs analysis [meyersonposition]. Let c c be the cost of generating a response for a single step with LLM M M. Assuming the cost of generating tokens scales linearly with the number of tokens (since this is how APIs are priced), the cost of an agent generating a sample for m m steps is c sample=c​m c_{\textrm{sample}}=cm. Let c vote c_{\textrm{vote}} be the expected cost of sampling either a correct vote for a subtask or the alternative against which it races, c sub c_{\textrm{sub}} the expected cost of completing a subtask, and c full c_{\textrm{full}} the expected cost of completing the full task. Then,
+
+c vote=c sample p vote+p alt=c​m p m+(1−p)​p m−1=c​m p m−1,\displaystyle c_{\textrm{vote}}=\frac{c_{\textrm{sample}}}{p_{\textrm{vote}}+p_{\textrm{alt}}}=\frac{cm}{p^{m}+(1-p)p^{m-1}}=\frac{cm}{p^{m-1}},(15)
+c sub=c vote⋅2​k min​p sub−k min 2​p−1=c​m p m−1⋅2​k min​(1+(1−p p)k min)−1−k min 2​p−1≈c​m​k min p m−1​(2​p−1),\displaystyle c_{\textrm{sub}}=c_{\textrm{vote}}\cdot\frac{2k_{\min}p_{\textrm{sub}}-k_{\min}}{2p-1}=\frac{cm}{p^{m-1}}\cdot\frac{2k_{\min}\left(1+\left(\frac{1-p}{p}\right)^{k_{\min}}\right)^{-1}-k_{\min}}{2p-1}\approx\frac{cmk_{\min}}{p^{m-1}(2p-1)},(16)
+c full=s m⋅c sub=c​s​k min​(2​(1+(1−p p)k min)−1−1)p m−1​(2​p−1)≈c​s​k min p m−1​(2​p−1)=Θ​(p−m​c​s​ln⁡s),\displaystyle c_{\textrm{full}}=\frac{s}{m}\cdot c_{\textrm{sub}}=\frac{csk_{\min}\left(2\left(1+\left(\frac{1-p}{p}\right)^{k_{\min}}\right)^{-1}-1\right)}{p^{m-1}(2p-1)}\approx\frac{csk_{\min}}{p^{m-1}(2p-1)}=\Theta(p^{-m}cs\ln s),(17)
+
+where Eq.[16](https://arxiv.org/html/2511.09030v1#S3.E16 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") comes from plugging Eq.[12](https://arxiv.org/html/2511.09030v1#S3.E12 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") into the hitting time for gambler’s ruin [bernoulli1713ars], Eq.[17](https://arxiv.org/html/2511.09030v1#S3.E17 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") comes from multiplying by the number of subtasks, and the approximation holds when p sub≈1 p_{\textrm{sub}}\approx 1, i.e., when the error tolerance is low. Notably, the cost grows exponentially with m m. Figure[5](https://arxiv.org/html/2511.09030v1#S3.F5 "Figure 5 ‣ 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") illustrates this phenomenon. As the number of meaningful decisions assigned to an agent grows, the chance that its sequence of decisions will match exactly across multiple samples vanishes. In contrast, in the MAD case, the system scales log-linearly with s s:
+
+𝔼​[cost of solving full task;m=1]=Θ​(p−1​c​s​ln⁡s)=Θ​(s​ln⁡s),\mathbb{E}[\textrm{cost of solving full task};m=1]=\Theta(p^{-1}cs\ln s)=\Theta(s\ln s),(18)
+
+when p p, c c, and t t are held constant. Figure[4(b)](https://arxiv.org/html/2511.09030v1#S3.F4.sf2 "In Figure 4 ‣ 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") illustrates this efficient scaling. The discovery of algorithms that scale log-linearly has been critical to the scalability in classical computing [cormen2022introduction]. This result is therefore encouraging: It shows the potential of LLM-based systems to scale in a similar manner, increasing their reliability to a point where it is possible to trust them to complete long-running tasks. Furthermore, the Θ​(ln⁡s)\Theta(\ln s) factor in Eq.[18](https://arxiv.org/html/2511.09030v1#S3.E18 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") corresponds to the number of votes required per step, which in practice can be parallelized across Θ​(ln⁡s)\Theta(\ln s) processes. So, the time cost of the parallelized system scales only linearly with s s.
+
+Although Eq.[18](https://arxiv.org/html/2511.09030v1#S3.E18 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") shows how MAD scales efficiently as the number of steps increases, in practice, the model cost c c and per-step success rate p p will have a major impact. Different LLMs will have different costs and different inherent error rates. Solving a task with a large number of steps will incur a meaningful e.g. economic cost, so before running on the full task, an LLM M M such that c/p\nicefrac{{c}}{{p}} is minimized should be selected. In other words, Eq.[18](https://arxiv.org/html/2511.09030v1#S3.E18 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") makes it possible to select an LLM that will be most cost-effective at scale, and, since each individual step is so small, it is likely that smaller LLMs will be sufficient to solve the task.
+
+![Image 6: Refer to caption](https://arxiv.org/html/x6.png)
+
+(a) 
+
+![Image 7: Refer to caption](https://arxiv.org/html/x7.png)
+
+(b) 
+
+Figure 5: _Task decomposition scaling laws resulting from Eq.[17](https://arxiv.org/html/2511.09030v1#S3.E17 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors")._ (a a) For a task with 1M steps, as the number of steps assigned to each agent increases (and thus the number of agents decreases), there is an exponential increase in the expected cost to complete the task with sufficient reliability. Notice that while the x-axis is log(.)\log(.) scale, the y-axis is log(log(.))\log(\log(.)) scale. (b b) As the size of the task scales, this pattern continues: setups where agents are assigned more steps incur orders-of-magnitude of additional cost. 
+
+### 3.3 Red-Flagging: Recognizing Signs of Unreliability
+
+Since p p plays such an important role in the cost of the system, when possible, it is worth taking practical measures to push it higher. The simple premise is that “bad” behaviors are correlated in LLMs, so if an LLM produces a response that signals pathological behavior, the response should be flagged and simply discarded. Since in MAD each agent is responsible for only a single step, each step is not too expensive, and it can be discarded and a new action resampled (i.e., by making another agent call). In this paper, two signs of unreliability are used as red flags: (1) overly long responses, and (2) incorrectly formatted responses. The hypothesis is that not only will discarding flagged respones increase p p, it will also meaningfully reduce _correlated errors_, since both flag types indicate that the LLM has been conditioned into a strange starting point before sampling. It is simple to detect these signs and discard their responses, but, since the paper focuses on understanding the impact on the expected cost of highly scaled long-horizon tasks, it is worth elaborating on the motivation and impact of this implementation choice.
+
+Consistent with observations in prior work that longer answers tend to have more errors [liu2024lostinthemiddle], preliminary experiments for this paper showed that once an LLM gets initially confused, it can go off the rails and over-analyze a situation in a cycle of self-destruction. In MAD, each agent’s role is highly focused and relatively simple; if an agent is doing too much work to figure out its answer, it is likely to be confused and missing the point, and therefore more likely to give an incorrect answer. Even if the success rate is increased only from 99% to 99.9%, such an increase can have a large impact when the number of steps is large.
+
+Similarly, preliminary experiments showed that when an agent produces an answer in an incorrect format, it is more likely to have become confused at some point on the way to that answer. So, instead of trying to fix the format of the answer in some way, the detection of the incorrect format can be flagged and the sample discarded.
+
+Experimental evidence for the above two phenomena is detailed in Section[4](https://arxiv.org/html/2511.09030v1#S4 "4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors"). Formally, if v v is the probability that a valid response is parsed from the LLM’s output, i.e., no red flags, then the expected cost of MAKER can be written as:
+
+𝔼​[cost of MAKER]≈c​s​k min v​(2​p−1)=Θ​(c​s​ln⁡s v​p),\mathbb{E}[\textrm{cost of MAKER}]\approx\frac{csk_{\min}}{v(2p-1)}=\Theta\left(\frac{cs\ln s}{vp}\right),(19)
+
+where p p now indicates the per-step success rate _given that the response is valid_. In practice, this formula can be used to decide the trade-off between incorporating more red flags to increase p p (potentially resulting in a lower k min k_{\min}, whose calculation depends on p p but not v v) and the incurred cost overhead of discarded samples.
+
+The most straightforward approach is to estimate p p on a relatively small number of steps to determine the choice of model and red flags, i.e., c c and v v, as well as the value of k k, before running the system on the full task with s s steps. An example application of this approach is demonstrated in the next section.
+
+4 Experiments
+-------------
+
+This section details the application of MAKER to solving the Towers of Hanoi problem with 20 disks, i.e. over one million LLM steps with zero errors. First, the experimental setup is described (Section[4.1](https://arxiv.org/html/2511.09030v1#S4.SS1 "4.1 Setup ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors")). Next, single-step error-rates are estimated (Section[4.2](https://arxiv.org/html/2511.09030v1#S4.SS2 "4.2 Estimating single-step success rates ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors")), which are used to project the cost of different setups (Section[4.3](https://arxiv.org/html/2511.09030v1#S4.SS3 "4.3 Projecting the cost of error correction ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors")). Then, a selected setup is run and evaluated on the full task (Section[4.4](https://arxiv.org/html/2511.09030v1#S4.SS4 "4.4 Solving the 20-disk problem: Over one million steps with zero errors ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors")). Finally, the impacts of red-flagging are investigated (Section[4.5](https://arxiv.org/html/2511.09030v1#S4.SS5 "4.5 Investigating the impact of red-flagging ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors")). All in all, these experiments validate the components and scalability of the MAKER implementation of the MDAP framework.
+
+### 4.1 Setup
+
+The implementation of MAKER for this problem was derived from the single-agent approach introduced in prior work [shojaee2025illusion]. The single-agent prompts were modified so that each agent knows that it must only perform a single step of the problem, i.e., to move a single disk.
+
+For efficiency, and to focus the agents as much as possible, each agent is given the minimal context it needs to perform its single step. In the case of Tower of Hanoi, everything the agent needs to know is the overall strategy and the current state of the problem, i.e., the configuration of disks. As in prior work [sinha2025, shojaee2025illusion], the overall strategy is provided in the prompt for each agent. The strategy works for any even number of disks and is the one most often suggested by the LLMs themselves when no strategy is provided a priori. (Appendix[C](https://arxiv.org/html/2511.09030v1#A3 "Appendix C Prompts and Parsers ‣ Solving a Million-Step LLM Task with Zero Errors")). This design choice effectively isolates the ability of agents to _execute_ clear instructions from the ability of LLMs to have _insights_ about how tasks should be solved (Section[5](https://arxiv.org/html/2511.09030v1#S5 "5 Discussion and Future Work ‣ Solving a Million-Step LLM Task with Zero Errors"); see also [sinha2025]). Both insight and execution are essential to the capabilities of LLMs, but often they are entangled in experiments, making it difficult to identify the source of failure. Focusing on execution makes it possible to pursue the goal of finding minimal conditions for scaling LLM systems with respect to the number of steps.
+
+The full agent prompt template is given in Appendix[C](https://arxiv.org/html/2511.09030v1#A3 "Appendix C Prompts and Parsers ‣ Solving a Million-Step LLM Task with Zero Errors"). Given the current state (i.e., configuration of disks) and prior move (which disk was moved from where to where), each agent is asked to provide the next move and the resulting next state. Unlike in the single-agent case, where only the sequence of moves needs to be produced, in the MAD case each agent must produce the resulting state, since this is critical information to be fed to the next agent. Each agent is asked to format its answers as “move = <move>” and “next_state = <next_state>”. Superficially, the requirement to produce the next state along with the action creates even more potential points of failure beyond the single-agent case, but, as it turns out, any drawbacks are overcome by the advantages of extreme decomposition and error correction.
+
+### 4.2 Estimating single-step success rates
+
+Running an LLM-based system at the scale of a million steps is expensive. It is thus desirable to calibrate the parameters of the system and estimate the success rate and cost before any large experiments are run. Equation[18](https://arxiv.org/html/2511.09030v1#S3.E18 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") provides such a calibration and estimation method. Key to this estimation is the per-step success rate p p, which depends on the underlying LLM used.
+
+A straightforward way to estimate the per-step success rate is to run the system on a random subset of steps. One advantage of having the same strategy in the prompt of each agent is that the correct answer is known for each step, and, assuming every prior step is correct, the inputs are known as well. This knowledge also makes it possible to use the API to obtain a batch of answers for many steps asynchronously, thus greatly speeding up wall-clock time of experiments and reducing cost [OpenAI_BatchAPI_Pricing]. These properties are part of what makes Towers of Hanoi such a practical testbed for many-step methods. For other problems, it may not be possible to estimate p p as efficiently, but, in any case, it should be possible to estimate it to a practical degree.
+
+These initial exploratory estimation experiments were run without red-flagging. That is, agents were given a maximum of 2048 output tokens as an initial conservative upper bound, ensuring they have plenty of space to express whatever answer they need to express. They also used a “repairing parser” (written by an LLM, Appendix[C](https://arxiv.org/html/2511.09030v1#A3 "Appendix C Prompts and Parsers ‣ Solving a Million-Step LLM Task with Zero Errors")) that attempted to correct some of the more common formatting errors in order to extract the LLM’s intended answer reliably out of its output. Importantly, since these experiments focus on the inherent generative reasoning capabilities of LLMs, they do not include LLMs that have access to auxiliary tools.
+
+Figure[6(a)](https://arxiv.org/html/2511.09030v1#S4.F6.sf1 "In Figure 6 ‣ 4.2 Estimating single-step success rates ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors") shows the single-step error rates across various LLMs as the number of disks is increased.
+
+![Image 8: Refer to caption](https://arxiv.org/html/x8.png)
+
+(a) 
+
+Model$/M tok 1−p 1-p k min k_{\min}𝔼​[cost]\mathbb{E}[\text{cost}]
+gpt-4.1-nano 0.4 842.3571 29$41.9K
+gpt-4.1-mini (τ=1.0\tau=1.0)1.6 580.0040 4$4.9K
+gpt-4.1-mini (τ=0.1\tau=0.1)1.6 538.0022 3$3.5K
+o3-mini (low)4.4 535.0018 3$9.4K
+haiku-4.5 5.0 588.1839 12$71.2K
+llama-3.2-3B 0.06 434 1.0--
+gpt-oss-20B 0.2 1104.0358 6$1.7K
+qwen-3 0.6 449.2342 15$11.5K
+deepseek-v3.1 1.7 1004.0569 6$14.6K
+kimi-k2 3.0 925.0393 6$22.9K
+
+(b) 
+
+Figure 6: _Empirical estimates of single-step error rates across models._ (a a) Different models have different per-step error rates, but these rates do not notably decrease as the number of disks (log of the solution length) increases, which is an encouraging sign for the ability of the system to scale. (b b) Given the per-token API cost of each model, the error rate estimate, and the mean number of output tokens, Eq.[18](https://arxiv.org/html/2511.09030v1#S3.E18 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") can be used to estimate the cost of running the full 20-disk experiment with t=0.95 t=0.95. Among the proprietary models, although gpt-4.1-nano has the cheapest per-token cost, and o3-mini has the lowest per-step error rate, the expected cost of gpt-4.1-mini (with low temperature) is by far the lowest, and gpt-oss-20B is the clear open-source choice. In this manner, using Eq.[18](https://arxiv.org/html/2511.09030v1#S3.E18 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors") to estimate cost can lead to substantial savings. 
+
+There are two important and perhaps surprising takeaways from this figure: (1) Different LLMs have different base error rates, but those of relatively small non-reasoning models are comparable to more advanced reasoning models, suggesting that non-reasoning models may be a more effective fit for long-range tasks with MAKER. Figure[6(b)](https://arxiv.org/html/2511.09030v1#S4.F6.sf2 "In Figure 6 ‣ 4.2 Estimating single-step success rates ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors") shows that this difference cannot be explained by a difference in output tokens, since the models use a similar number of tokens. (2) The per-step error rate is remarkably stable as the number of disks increases, a highly encouraging sign that MAKER will enable scaling to a large number of steps without the kind of exploding error rates often seen with single agents.
+
+### 4.3 Projecting the cost of error correction
+
+Based on the single-step error rates estimated above, it is possible to estimate the cost of successfully solving the full 20-disk task for models with p>0.5 p>0.5, i.e., models for which voting converges to correct subtask answers as k k increases. The table in Figure[6(b)](https://arxiv.org/html/2511.09030v1#S4.F6.sf2 "In Figure 6 ‣ 4.2 Estimating single-step success rates ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors") shows these estimates, given the per-token cost of the model, the mean number of output tokens per step, and the empirical estimates of p p and k min k_{\min}. For a given model, its estimated cost per sample (Section[3.2](https://arxiv.org/html/2511.09030v1#S3.SS2 "3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors")) is:
+
+c sample=c in⋅n in+c out⋅n out,c_{\textrm{sample}}=c_{\textrm{in}}\cdot n_{\textrm{in}}+c_{\textrm{out}}\cdot n_{\textrm{out}},(20)
+
+where c in c_{\textrm{in}} and c out c_{\textrm{out}} are the cost of input and output tokens, respectively, and n in n_{\textrm{in}} and n out n_{\textrm{out}} are the estimated average number of input and output tokens per sample. The cost per sample is multiplied by the expected number of samples to get the overall cost. For the target probability of success t=0.95 t=0.95, these results make it clear that the most effective proprietary choice is gpt-4.1-mini, and the most effective open-source choice is gpt-oss-20B. Whether these estimates are useful depends on whether the errors are sufficiently decorrelated across runs. Indeed they appear to be: In two independent runs of gpt-4.1-mini (τ=0.1\tau=0.1) on the set of 10K random samples, there were zero steps that had errors in both runs. Decorrelation of errors is discussed further in Sections[4.5](https://arxiv.org/html/2511.09030v1#S4.SS5 "4.5 Investigating the impact of red-flagging ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors") and [5](https://arxiv.org/html/2511.09030v1#S5 "5 Discussion and Future Work ‣ Solving a Million-Step LLM Task with Zero Errors").
+
+Although the projected cost of gpt-oss-20B is lowest overall, in the scale-up experiment, gpt-4.1-mini was used because the OpenAI API was found to be more reliable than that of together.ai (a critical factor for experiments requiring millions of agentic calls). Note also that for reasoning LLMs with higher per-token cost than those in Figure[6(b)](https://arxiv.org/html/2511.09030v1#S4.F6.sf2 "In Figure 6 ‣ 4.2 Estimating single-step success rates ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors"), even if their estimated per-step error rate were zero, and therefore k min=1 k_{\min}=1, their overall cost would be higher than that of gpt-4.1-mini, simply due to the cost of running on all 2 20−1 2^{20}-1 steps, and it would be practical to assume the error estimate is a lower bound and set k=2 k=2. Thus, using the non-reasoning gpt-4.1-mini saves thousands of dollars in the scale-up experiment compared to the other proprietary models.
+
+### 4.4 Solving the 20-disk problem: Over one million steps with zero errors
+
+With gpt-4.1-mini as the base model, the maximum output token threshold was set to 750, and a red-flagging output parser was used to enforce the basic formatting requirements. Beyond this cutoff, the model often found itself in confusing logical loops; misformatted output was often correlated with such twisted reasoning, allowing them to be detected and discarded (as will be discussed further in Section[4.5](https://arxiv.org/html/2511.09030v1#S4.SS5 "4.5 Investigating the impact of red-flagging ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors")). Since k min=3 k_{\min}=3, at least three responses were generated in parallel for each step. The first step was generated with a temperature of 0 to make sure the best possible guess is included in the votes. For all subsequent votes, a temperature of 0.1 was used.
+
+With these calibrations, the full system solved the problem perfectly. Figure[7](https://arxiv.org/html/2511.09030v1#S4.F7 "Figure 7 ‣ 4.4 Solving the 20-disk problem: Over one million steps with zero errors ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors") shows a snapshot of an animation visualizing the movement of the disks through the million steps as well as the sequence of agent activations that accomplish it. This result constitutes the first successful solution of a task with one million LLM steps with zero errors, establishing that scaling LLM-based systems to large time horizons is possible.
+
+![Image 9: Refer to caption](https://arxiv.org/html/figures/1magentsscreenshot.png)
+
+Figure 7: _A snapshot of the million-step problem-solving process._ The dots in the background represent the steps, ordered in rows from top to bottom. At step 479,806, MAKER is near the middle of the million steps, and about a half of the agents have already executed (green) and about a half are waiting to do so (blue). An animation of this process can be seen at [www.youtube.com/watch?v=gLkehsQy4H4](https://arxiv.org/html/www.youtube.com/watch?v=gLkehsQy4H4).
+
+The behavior of the process can be analyzed by looking at how many samples had to be drawn for each step and how many votes were required (i.e., how many valid samples after red-flagging). A step is considered _undecided_ after i i rounds if an action decision has not yet been made based on the voting rule. Figure[8](https://arxiv.org/html/2511.09030v1#S4.F8 "Figure 8 ‣ 4.4 Solving the 20-disk problem: Over one million steps with zero errors ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors") shows how the number of undecided steps decreases with the number of sampling rounds (including invalid samples) and voting rounds (excluding invalid samples).
+
+![Image 10: Refer to caption](https://arxiv.org/html/x9.png)
+
+(a) 
+
+![Image 11: Refer to caption](https://arxiv.org/html/x10.png)
+
+(b) 
+
+Figure 8: _Convergence to zero-error solution._ The number of undecided steps decreases with sampling round (a a) and voting round (b b). In both cases, as expected from the theory, after the first k=3 k=3 rounds, there is a steady exponential decrease in the number of undecided steps, finally resulting in zero undecided steps and with zero errors. This sharp exponential convergence means that the vast majority of the overall cost is incurred in the first k k rounds of sampling; the cost of completing the remaining steps is effectively a rounding error. This effect emerges when p p is sufficiently high. It may at first appear disconcerting that there are any steps at all that require more than five voting rounds, but the decorrelation of errors is sufficient to prevent the voting mechanism from being overwhelmed (as described in Section[4.5](https://arxiv.org/html/2511.09030v1#S4.SS5 "4.5 Investigating the impact of red-flagging ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors")). Details on specific steps, including the one pathological step that took 18 rounds, are in Appendix[D](https://arxiv.org/html/2511.09030v1#A4 "Appendix D Sample Responses ‣ Appendix C Prompts and Parsers ‣ Solving a Million-Step LLM Task with Zero Errors"). 
+
+The exponential decay in the number of undecided steps mirrors the theoretical prediction. Due to this exponential decay, the vast majority of LLM calls (and therefore cost) is spent in the first k k calls, while the remaining cost is, for practical purposes, a rounding error. Notably, the task is solved perfectly even when using a less statistically powerful _first-to-k k_ voting (i.e., the first candidate k k votes wins), illustrating the robustness of the approach.
+
+Although the system completes with zero errors and as efficiently as expected, the fact that a few of the steps take notably more sampling and voting rounds than others could be cause for concern. The next section looks into how red-flagging reduces the negative impact of such correlated errors.
+
+### 4.5 Investigating the impact of red-flagging
+
+Red-flagging was hypothesized to reduce the per-step error rate, but also the impact of correlated errors, i.e., particular steps that have unusually high error rates compared to the average step. Figure[9](https://arxiv.org/html/2511.09030v1#S4.F9 "Figure 9 ‣ 4.5 Investigating the impact of red-flagging ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors") shows evidence for both of these phenomena; however, the impact on correlated errors turns out to be a much more important effect. In the first two rounds of voting, the max number of output tokens (when calling the API) was set to 2048 to enable this analysis. Figure[9(a)](https://arxiv.org/html/2511.09030v1#S4.F9.sf1 "In Figure 9 ‣ 4.5 Investigating the impact of red-flagging ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors") shows that the per-step error rate increases precipitously once the response length crosses about 700. Although p p past this threshold is still around 90%, this is a drastic degradation compared to error rates on the order of 1-in-1000 with shorter responses. Even so, since so few of the overall responses are overly long, the overall p p at higher max token thresholds is not much larger, and in particular, not large enough to induce an increase in k min k_{\min}.
+
+However, the main benefit of red-flagging becomes clear in Figure[9(b)](https://arxiv.org/html/2511.09030v1#S4.F9.sf2 "In Figure 9 ‣ 4.5 Investigating the impact of red-flagging ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors"). This figure plots the number of collisions across the first two votes of all steps in the 20-disk experiment, i.e., how many steps have _both_ votes incorrect. The number of collisions is computed across max token cutoffs for both the repairing parser used in Section[4.2](https://arxiv.org/html/2511.09030v1#S4.SS2 "4.2 Estimating single-step success rates ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors"), as well as the red-flagging parser used in Section[4.4](https://arxiv.org/html/2511.09030v1#S4.SS4 "4.4 Solving the 20-disk problem: Over one million steps with zero errors ‣ 4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors"). Assuming the steps are i.i.d. with a uniform success rate, the expected number of collisions is no more than one or two in all cases. However, with a high max token cutoff the observed number of collisions is much higher, especially with the repairing parser. Red-flagging successfully reduces some of these correlated errors and may be critical to the success of the method on many-step tasks. Appendix[D](https://arxiv.org/html/2511.09030v1#A4 "Appendix D Sample Responses ‣ Appendix C Prompts and Parsers ‣ Solving a Million-Step LLM Task with Zero Errors") illustrates what correlated errors in this domain can look like, and Section[5](https://arxiv.org/html/2511.09030v1#S5 "5 Discussion and Future Work ‣ Solving a Million-Step LLM Task with Zero Errors") discusses techniques for reducing correlation.
+
+![Image 12: Refer to caption](https://arxiv.org/html/x11.png)
+
+(a) 
+
+![Image 13: Refer to caption](https://arxiv.org/html/x12.png)
+
+(b) 
+
+Figure 9: _Impact of red-flagging on reducing errors._ (a a) The error rate increases precipitously once the response length crosses about 700. However, since so few of the overall responses are overly long, the overall error rate at higher max token thresholds is not much larger, i.e., not large enough to induce an increase in k min k_{\min}. (b b) However, when focusing on correlated errors, the advantage of red-flagging becomes clear: Moving from a ‘helpful’ repairing output parser to one that discards samples with any formatting issues leads to lower collision counts (i.e., number of steps whose first two votes are incorrect). These results confirm that robust decorrelation is crucial in many-step tasks, and that red-flagging helps with correlated errors. 
+
+5 Discussion and Future Work
+----------------------------
+
+This paper introduced a framework for massively decomposed agentic processes (MDAPs) that can reliably solve tasks with large numbers of steps, as well as the first implementation of this framework, MAKER, which was successfully applied to the Towers of Hanoi benchmark task. This initial study established core principles that open many directions for future work.
+
+#### More General Applications
+
+LLM behaviors can be divided into two categories: _insights_ and _execution_. Insights come from an LLM creatively generating ideas, plans, and strategies, while execution involves following through with them. This paper focused on execution: the overall strategy to solve the problem is set at the beginning of the process, and given this strategy, the answer to each subtask is clearly achievable. Extending the framework to handle LLM-based insights is an important area of future work, since insights are inherently more open-ended and may come with irreducible step-wise uncertainty. One concrete way is to apply MAKER to the case where the creation of each subtask is itself treated as a step in an overall decomposition. The goal is to automate the entire problem-solving pipeline: the task is decomposed into minimal chunks, each one is solved, and the results are aggregated into a complete solution. The framework needs to be extended to handle an unknown number of total steps, as well as steps of different types, different underlying success rates, inexact matches between insight steps, and possible failures of the matching process.
+
+Preliminary experiments in this direction are promising (Appendix[F](https://arxiv.org/html/2511.09030v1#A6 "Appendix F Multiplication Experiments ‣ Appendix E Open-source Model Details ‣ Appendix D Sample Responses ‣ Appendix C Prompts and Parsers ‣ Solving a Million-Step LLM Task with Zero Errors")). A more general version of MAKER was created with four agent types: decomposition agents, called recursively to break a task into two simpler sub-tasks and a composition function; decomposition discriminator agents, called to vote (with first-to-k k voting) for one of n=2​k−1 n=2k-1 decomposition candidates; solution discriminator agents, called to vote for one of n n composition candidates; and problem solver agents used to solve minimal subtasks without decomposing them. The system achieved promising results on large-digit multiplication, a notoriously difficult task for transformer-based models [Dziriexp, bai2025canttransformerslearnmultiplication]. Future work will investigate the broader potential of such a system.
+
+For simplicity, in this paper, all MAKER agents used the same underlying LLM and their prompts only differed in the subtask they were assigned. More general systems will likely require different LLMs for different kinds of roles, and a general increased diversity across agents. One of the benefits of such diversity will be decorrelation of errors, as is discussed next.
+
+#### The Importance of Decorrelated Errors
+
+For clarity and simplicity, theoretical analysis in this paper assumed that the errors are i.i.d. across steps. This assumption was reasonable because the steps were relatively uniform. Even so, there were a few steps that, for no apparent reason, had substantially higher inherent error rates than others. Such strange behaviors for particular inputs are well-known side-effects of LLM training, and dealing with such correlated errors is an open foundational problem in machine learning [lehman2025evolution].
+
+The independent sampling plus red-flagging method used in this paper was sufficient to overcome them, but there may be other real-world cases where more sophisticated decorrelation methods are required. For example, instead of simple resampling using temperature, paraphrasing the prompt [wahle2024paraphrase] or adding noise to the prompt in some other way could help avoid such anomalous states caused by a particular fixed context. The error rate of each step would then approach the true ability of the LLM to understand and execute that step. Further, the framework could be extended to account for different values of p p for different steps, and decorrelation methods that make sampling more effective. Such extensions are critical to make the framework more broadly applicable, since in a long-range task, even a single step with an abnormally high error rate can cause the reasoning process to fail.
+
+#### Parallels with microservices
+
+Parallels can be drawn between microagents and microservices. The benefits of decomposing a monolithic agent’s task into subtasks are similar to those of decomposing a monolithic application into smaller services [fowler_microservices]:
+
+*   •
+Modularity: Each microagent can be tailored to a specific task and leverage the right tools for the job.
+
+*   •
+Data management: Each microagent is responsible for managing its data.
+
+*   •
+Independent development: Microagents can be updated and tested in isolation from the rest of the system.
+
+*   •
+Scalability: Microagents can be scaled independently, adjusting the resources to the actual needs of the system.
+
+*   •
+Communication: Natural language is a powerful, well-understood communication protocol.
+
+*   •
+Complexity: As microservices solve for large-scale systems, microagents solve for complex reasoning tasks.
+
+*   •
+Real-time monitoring: Microagents can be monitored in real-time.
+
+*   •
+Design for failure: Microagents are designed to tolerate the failure of any of the agents.
+
+*   •
+Evolutionary design: Change is easier to manage with microagents than with a monolithic agent.
+
+In fact, microagents could be considered a natural evolution of microservices. The framework could be extended in that direction, leveraging the lessons learned from microservice architectures [goyal2025microservices].
+
+#### Limits of Decomposition
+
+The application of MAKER assumes a task can be decomposed into small enough and simple enough steps such that each step can be solved by an LLM agent with reasonable probability. There is thus one central question that will dictate how broadly the methods can be applied: Are there important problems where such a decomposition is not possible or is computationally infeasible to discover? At the lowest level of LLM implementation, there is a decomposition into primitive operations executed on CPUs or GPUs; one can hope that there is some decomposition between that and the entire problem that is still linguistic but effectively compartmentalizes context and different behaviors. It remains to be seen which kinds of tasks are most resistant to such a decomposition.
+
+#### Safety, Morality, and the Future of Superintelligence
+
+If large and important real-world problems can be successfully decomposed into microsteps, there could be major benefits with respect to safety. If each step has a clearly defined and limited focus and purpose, the LLM’s view of the world and domain of influence can be strictly limited, allowing for more effective sand-boxing, auditing, and general control. Multiple focused agents can be run independently on each step, which also substantially reduces the ability of agents to collude to produce harmful actions. As was seen in the experiments in this paper, the vast majority of work can be performed by relatively small LLMs that are capable of handling these small steps, thus avoiding the risks of harmful behaviors that can arise in more powerful models [lynch2025agentic]. In other words, it could help mitigate the risk of uncontrollable superintelligence. Complementing these reduced societal risks, extreme decomposition could reduce the chance of unintended suffering of the machines themselves, as model welfare has become an increased area of concern [anthropic2025claude4systemcard]. As argued in prior work, relying on smaller models and having models focus entirely on limited-scope subtasks, as is done through decomposition, could reduce the chance that sentience unintentionally emerges [meyersonposition, tkachenko2024position].
+
+LLMs today have just about all the raw intelligence needed to scaffold them into the great superintelligent skyscrapers of the coming age, and to scaffold themselves into productive organizations of technological progress. MDAPs present an alternative path to realizing the benefits of superintelligence, which, compared to endlessly building bigger and smarter single-agent models, comes with substantially reduced risks to both humans and machines.
+
+6 Conclusion
+------------
+
+This paper focused on the question of how LLM-based agentic systems can be massively scaled. Decomposing tasks into minimal subtasks makes it possible to apply error-correction techniques effectively and efficiently, supporting scaling to millions of steps and beyond. A new category of AI systems results, i.e. massively decomposed agentic processes, or MDAPs. MAKER is a first implementation of this approach, and the experiments in this paper on Towers of Hanoi a first demonstration of its value. This foundation opens the door to more general-purpose implementations and large-scale, long-running real-world applications. Such MDAPs offer an alternative to building endlessly larger and more intelligent LLMs: By smashing intelligence into a million pieces, it is possible to build AI that is efficient, safe, and reliable.
+
+Appendix A Log Scale Version of Figure 1
+----------------------------------------
+
+![Image 14: [Uncaptioned image]](https://arxiv.org/html/x13.png)
+
+Figure 10:  This is the same figure as [1](https://arxiv.org/html/2511.09030v1#S0.F1 "Figure 1 ‣ Solving a Million-Step LLM Task with Zero Errors"), but with a log-scale x-axis. 
+
+Appendix B Additional Derivations
+---------------------------------
+
+This section provides details for the derivation of Eq.[14](https://arxiv.org/html/2511.09030v1#S3.E14 "In 3.2 First-to-ahead-by-𝑘 Voting and Scaling Laws ‣ 3 Methods ‣ Solving a Million-Step LLM Task with Zero Errors"). Suppose the target probability for solving the full task with zero errors is t t. The goal is to find the minimum k k such that
+
+t≥p full=(1+(1−p p)k)−s m⟹t−m s≥1+(1−p p)k.t\geq p_{\textrm{full}}=\Bigg(1+\bigg(\frac{1-p}{p}\bigg)^{k}\Bigg)^{-\frac{s}{m}}\implies t^{-\frac{m}{s}}\geq 1+\left(\frac{1-p}{p}\right)^{k}.(21)
+
+Plugging in a=t−m s a=t^{-\frac{m}{s}} and b=1−p p b=\frac{1-p}{p} gives
+
+a≥1+b k⟹a−1≥b k⟹ln⁡(a−1)≥k​ln⁡b⟹k≥ln⁡(a−1)ln⁡b,a\geq 1+b^{k}\implies a-1\geq b^{k}\implies\ln(a-1)\geq k\ln b\implies k\geq\frac{\ln(a-1)}{\ln b},(22)
+
+since ln⁡b=ln⁡(1−p p)<0\ln b=\ln\left(\frac{1-p}{p}\right)<0 when p>0.5 p>0.5. Replacing a a and b b and taking the first satisfying integer yields
+
+k min=⌈ln⁡(t−m/s−1)ln⁡(1−p p)⌉.k_{\min}\;=\;\left\lceil\frac{\ln\left(t^{-m/s}-1\right)}{\ln\left(\frac{1-p}{p}\right)}\right\rceil.(23)
+
+To understand the asymptotic behavior of k min k_{\min}, first note
+
+t−m s=e−m s​ln⁡t=e x,t^{-\frac{m}{s}}=e^{-\frac{m}{s}\ln t}=e^{x},(24)
+
+where x=−m s​ln⁡t x=-\frac{m}{s}\ln t. Suppose t>e−1 t>e^{-1} (in our experiments it is close to 1). Then, x∈(0,1)x\in(0,1), and the classic bounds hold:
+
+x\displaystyle x≤e x−1≤e​x\displaystyle\leq e^{x}-1\leq ex(25)
+⟹−m s​ln⁡t\displaystyle\implies-\frac{m}{s}\ln t≤t−m s−1≤−e​m s​ln⁡t\displaystyle\leq t^{-\frac{m}{s}}-1\leq-\frac{em}{s}\ln t(26)
+⟹ln⁡(−m s​ln⁡t)\displaystyle\implies\ln\left(-\frac{m}{s}\ln t\right)≤ln⁡(t−m s−1)≤ln⁡(−e​m s​ln⁡t)\displaystyle\leq\ln\left(t^{-\frac{m}{s}}-1\right)\leq\ln\left(-\frac{em}{s}\ln t\right)(27)
+⟹ln⁡(−m​ln⁡(t))−ln⁡(s)\displaystyle\implies\ln\left(-m\ln(t)\right)-\ln(s)≤ln⁡(t−m s−1)≤ln⁡(−e​m​ln⁡(t))−ln⁡(s)\displaystyle\leq\ln\left(t^{-\frac{m}{s}}-1\right)\leq\ln\left(-em\ln(t)\right)-\ln(s)(28)
+⟹ln⁡(−m​ln⁡(t))−ln⁡(s)ln⁡(1−p p)\displaystyle\implies\frac{\ln\left(-m\ln(t)\right)-\ln(s)}{\ln\left(\frac{1-p}{p}\right)}≥ln⁡(t−m s−1)ln⁡(1−p p)≥ln⁡(−e​m​ln⁡(t))−ln⁡(s)ln⁡(1−p p)\displaystyle\geq\frac{\ln\left(t^{-\frac{m}{s}}-1\right)}{\ln\left(\frac{1-p}{p}\right)}\geq\frac{\ln\left(-em\ln(t)\right)-\ln(s)}{\ln\left(\frac{1-p}{p}\right)}(29)
+⌈Θ​(1)−ln⁡(s)−Θ​(1)⌉\displaystyle\left\lceil\frac{\Theta(1)-\ln(s)}{-\Theta(1)}\right\rceil≥k min≥⌈Θ​(1)−ln⁡(s)−Θ​(1)⌉\displaystyle\geq k_{\min}\geq\left\lceil\frac{\Theta(1)-\ln(s)}{-\Theta(1)}\right\rceil(30)
+⟹k min\displaystyle\implies k_{\min}=Θ​(ln⁡(s)).\displaystyle=\Theta(\ln(s)).(31)
+
+Appendix C Prompts and Parsers
+------------------------------
+
+This section provides python code for the prompt templates (ψ\psi) and parsers (ψ a\psi_{a} and ψ x\psi_{x}) used in the experiments in Section[4](https://arxiv.org/html/2511.09030v1#S4 "4 Experiments ‣ Solving a Million-Step LLM Task with Zero Errors"). The prompts are based on ones used in prior work [shojaee2025illusion].
+
+_Prompt templates:_
+
+\`\`\`
+Repairing parser:
+ Red-flagging parser:
+ 
+
+Appendix D Sample Responses
+This section provides sample responses from the full experiment in Section 4.4.
+To give a sense of the kind of behavior that can occur, a shortest and a longest sample (with respect to number of tokens) from the first round of voting are shown, along with samples for the three racing candidates in the pathological step, step 10241, that takes 18 votes.
+Figure 11 illustrates the process of that race.
+
+Short sample, 256 Tokens, Step 950202:
+
+This sample demonstrates straightforward reasoning.
+ Long sample, 2048 Tokens, Step 539011:
+This sample demonstrates confusion.
+After it makes an error in its early reasoning, it talks in circles (“Wait, maybe the stacks are not as we think.”) until it hits the max token limit on the API call before outputting a correctly-formatted answer.
+ Step 10241, Candidate A (correct) sample:
+ Step 10241, Candidate B (incorrect) sample:
+ Step 10241, Candidate C (incorrect) sample:
+ 
+
+Figure 11: 
+Vote race for step 10241.
+This figure depicts the vote race for the pathological step 102421 that requires far more votes than any other step, though the correct decision is eventually made under both voting rules (first-to-kk and first-to-ahead-by-kk; Figure 8).
+Sample responses leading to each candidate are shown above.
+Additional samples were drawn after the decision was made to confirm that Candidate A does keep pulling further ahead.
+Although the correct decision was made, the fact that this pathological sample exists serves as motivation for developing more sophisticated error decorrelation methods in the future (Section 5).
+
+Appendix E Open-source Model Details
+The below table gives details on the open-source models used in this paper, which were accessed via the together.ai API.
+Temperature 0.1 was used for all open-source models.
+
+Model Name
+# Params
+Endpoint
+Input $/MTok
+Output $/MTok
+
+Qwen-3
+235B
+Qwen/Qwen3-235B-A22B-Instruct-2507-tput
+0.2
+0.6
+
+DeepSeek-v3.1
+671B
+deepseek-ai/DeepSeek-V3
+0.6
+1.7
+
+Kimi-K2
+1T
+moonshotai/Kimi-K2-Instruct
+1.0
+3.0
+
+GPT-OSS-20B
+20B
+OpenAI/gpt-oss-20B
+0.05
+0.2
+
+Llama-3.2-3B
+3.2B
+meta-llama/Llama-3.2-3B-Instruct-Turbo
+0.06
+0.06
+
+Table 1: Open-source model details. Models accessed through together.ai API.
+
+Appendix F Multiplication Experiments
+
+Figure 12: 
+Solve rate of the multi-agent system on 5×5 and 6×6 digit multiplication tasks as a function of voting parameter kk, with decomposition depth fixed at 55. Dotted horizontal lines indicate baseline single-agent performance for each task. As kk increases, accuracy improves for both 5×5 and 6×6 multiplication, reaching a perfect solve rate for 5x5 and reaching the target solve rate used in Section 4 of t=0.95t=0.95 for 6x6.
+These results demonstrate the benefit of voting even at fixed reasoning depth (Algorithm 4).
+In this experiment, gpt-4.1-mini was used for all agents.
+
+Bai et al. [bai2025canttransformerslearnmultiplication] showed that standard Transformers struggle with multi-digit multiplication because attention alone fails to maintain long-range dependencies between intermediate digit interactions. Their reverse-engineering analysis revealed that successful computation requires constructing a directed acyclic “attention tree” to propagate partial products across steps. The MDAP implementation, validated here on the same multiplication benchmark, is more general: it recursively decomposes any given task into subtasks and mitigates the multi-step degradation of accuracy by voting on each decomposition step, composition step, and atomic reasoning step. In contrast to model-specific architectural fixes, this voting-based recursive reasoning mechanism scales naturally with task complexity, allowing reliable multi-step inference beyond the arithmetic domain (Algorithm 4). The source code for this experiment is available here: www.github.com/cognizant-ai-lab/neuro-san-benchmarking.
+
+Algorithm 4  Recursive multi-agent solve: decomposition sampling + voting until non-decomposable or depth limit, then solution sampling + voting, recursively composed to a final answer
+
+1:N←2​k−1N\leftarrow 2k-1 ⊳\triangleright First-to-kk voting, NN candidates per step
+
+2:function Decompose(xx) 
+
+3:  sample NN decompositions via Decomposer(x)(x); vote via SolutionDiscriminator until one reaches kk (else argmax); return (P1,P2,C)(P_{1},P_{2},C)
+
+4:end function
+
+5:function Atomic(xx) 
+
+6:  sample NN answers via ThinkingModule(x)(x); vote via CompositionDiscriminator; return winner 
+
+7:end function
+
+8:function Solve(x,dx,d)
+
+9:  if d≥MAX_DEPTHd\geq\text{MAX\_DEPTH} then
+
+10:   return Atomic(xx) 
+
+11:  end if
+
+12:  (P1,P2,C)←Decompose​(x)(P_{1},P_{2},C)\leftarrow\textsc{Decompose}(x)
+
+13:  if P1=∅P_{1}=\varnothing or P2=∅P_{2}=\varnothing or C=∅C=\varnothing then
+
+14:   return Atomic(xx) 
+
+15:  end if
+
+16:  s1←Solve​(P1,d+1)s_{1}\leftarrow\textsc{Solve}(P_{1},d+1), s2←Solve​(P2,d+1)s_{2}\leftarrow\textsc{Solve}(P_{2},d+1)
+
+17:  sample NN composed solutions via ThinkingModule(“Solve ​C​(P1,P2)​ with ​P1=s1,P2=s2​”)(\text{``Solve }C(P_{1},P_{2})\text{ with }P_{1}{=}s_{1},P_{2}{=}s_{2}\text{''})
+
+18:  vote via CompositionDiscriminator until one reaches kk (else argmax); return winner
+
+19:end function
+\`\`\`

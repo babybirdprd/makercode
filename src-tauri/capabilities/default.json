@@ -1,0 +1,93 @@
+{
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "dialog:default",
+    "fs:default",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        "$HOME/**",
+        "**",
+        "C:\\**",
+        "D:\\**",
+        "E:\\**"
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [
+        "$HOME/**",
+        "**",
+        "C:\\**",
+        "D:\\**",
+        "E:\\**"
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [
+        "$HOME/**",
+        "**",
+        "C:\\**",
+        "D:\\**",
+        "E:\\**"
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [
+        "$HOME/**",
+        "**",
+        "C:\\**",
+        "D:\\**",
+        "E:\\**"
+      ]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [
+        "$HOME/**",
+        "**",
+        "C:\\**",
+        "D:\\**",
+        "E:\\**"
+      ]
+    },
+    {
+      "identifier": "fs:allow-watch",
+      "allow": [
+        "$HOME/**",
+        "**",
+        "C:\\**",
+        "D:\\**",
+        "E:\\**"
+      ]
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "git",
+          "cmd": "git",
+          "args": true
+        },
+        {
+          "name": "npx",
+          "cmd": "npx",
+          "args": true
+        },
+        {
+          "name": "npm",
+          "cmd": "npm",
+          "args": true
+        }
+      ]
+    }
+  ]
+}
