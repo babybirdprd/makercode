@@ -80,6 +80,7 @@ node_modules
 dist
 src-tauri/target
 .maker/worktrees
+.maker/logs
 .DS_Store
 .env
         `.trim();
@@ -93,16 +94,16 @@ src-tauri/target
         }
     }
 
-    async commitAll(message: string): Promise<void> {
+    async commitAll(message: string, cwd?: string): Promise<void> {
         try {
             // Ensure ignore file exists to prevent adding 'target' folder issues
-            await this.ensureGitIgnore();
+            // Only check ignore if we are in root (no cwd)
+            if (!cwd) await this.ensureGitIgnore();
 
-            // Use -A (all) instead of . to handle deletions/moves better and usually avoids the ignore warning
-            await MockTauriService.executeShell('git', ['add', '-A']);
-            await MockTauriService.executeShell('git', ['commit', '-m', message]);
+            // Use -A (all) instead of . to handle deletions/moves better
+            await MockTauriService.executeShell('git', ['add', '-A'], cwd);
+            await MockTauriService.executeShell('git', ['commit', '-m', message], cwd);
         } catch (e: any) {
-            // Fallback: If add -A failed, try adding just the current directory non-recursively or handle the error
             console.error("Commit failed", e);
             throw new Error(`Commit failed: ${e.message || e}`);
         }
@@ -183,10 +184,16 @@ src-tauri/target
         }
     }
 
-    async createCheckpoint(message: string, files: string[] = ['.']) {
-        console.log(`[Git] Checkpointing: ${message}`);
-        await MockTauriService.executeShell('git', ['add', ...files]);
-        await MockTauriService.executeShell('git', ['commit', '-m', `MAKER: ${message}`]);
+    /**
+     * Creates a git commit.
+     * @param message Commit message
+     * @param files Files to add (default: ['.'])
+     * @param cwd Optional directory to run git command in (for worktrees)
+     */
+    async createCheckpoint(message: string, files: string[] = ['.'], cwd?: string) {
+        console.log(`[Git] Checkpointing in ${cwd || 'root'}: ${message}`);
+        await MockTauriService.executeShell('git', ['add', ...files], cwd);
+        await MockTauriService.executeShell('git', ['commit', '-m', `MAKER: ${message}`], cwd);
     }
 
     async mergeWorktreeToMain(branchName: string, message: string): Promise<boolean> {

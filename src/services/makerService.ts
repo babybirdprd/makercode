@@ -154,7 +154,6 @@ export class MakerEngine {
             this.notify();
 
         } catch (e: any) {
-            // LOGGING FIX: Send to System Logs
             console.error("[MakerEngine] Start Task Failed:", e);
 
             this.state.errorCount++;
@@ -251,6 +250,7 @@ export class MakerEngine {
                 this.state.completedSteps++;
 
                 if (this.config.useGitWorktrees && worktreeInfo) {
+                    await this.git.createCheckpoint(step.description, ['.'], worktreeInfo.path);
                     await this.git.mergeWorktreeToMain(worktreeInfo.branch, `Executed Tool: ${step.description}`);
                     await this.git.cleanupWorktree(worktreeInfo.path, worktreeInfo.branch);
                 }
@@ -363,6 +363,9 @@ export class MakerEngine {
 
             this.updateStepStatus(index, AgentStatus.CHECKPOINTING);
             if (this.config.useGitWorktrees && worktreeInfo) {
+                // FIXED: Commit inside the worktree before merging
+                await this.git.createCheckpoint(step.description, ['.'], worktreeInfo.path);
+
                 this.updateStepStatus(index, AgentStatus.MERGING);
                 const mergeSuccess = await this.git.mergeWorktreeToMain(worktreeInfo.branch, step.description);
                 if (!mergeSuccess) throw new Error("Merge Conflict.");
