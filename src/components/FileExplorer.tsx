@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ChevronRight, ChevronDown, File, Folder, Loader2 } from 'lucide-react';
+import { ChevronRight, ChevronDown, File, Folder, Loader2, RefreshCw } from 'lucide-react';
 import { VirtualFileSystem } from '../services/virtualFileSystem';
 
 interface FileExplorerProps {
@@ -11,38 +11,54 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({ onSelectFile, active
   const [files, setFiles] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
 
+  const updateFiles = async () => {
+    setLoading(true);
+    const vfs = VirtualFileSystem.getInstance();
+    const tree = await vfs.getDirectoryTree();
+    setFiles(tree);
+    setLoading(false);
+  };
+
   useEffect(() => {
     const vfs = VirtualFileSystem.getInstance();
-
-    const updateFiles = async () => {
-      setLoading(true);
-      const tree = await vfs.getDirectoryTree();
-      setFiles(tree);
-      setLoading(false);
-    };
-
     // Initial load
     updateFiles();
-
     // Subscribe to changes
     return vfs.subscribe(updateFiles);
   }, []);
+
+  const handleRefresh = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    await VirtualFileSystem.getInstance().refresh();
+    await updateFiles();
+  };
 
   if (loading && files.length === 0) {
     return <div className="p-4 text-gray-500 flex items-center gap-2 text-xs"><Loader2 className="animate-spin" size={12} /> Loading...</div>;
   }
 
   return (
-    <div className="pl-2">
-      {files.map((file, i) => (
-        <FileTreeItem
-          key={file.path + i}
-          item={file}
-          level={0}
-          onSelect={onSelectFile}
-          activeFile={activeFile}
-        />
-      ))}
+    <div className="flex flex-col h-full">
+      <div className="flex items-center justify-between px-2 mb-2">
+        <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Project Files</span>
+        <button onClick={handleRefresh} className="p-1 hover:bg-gray-800 rounded-sm text-gray-500 hover:text-white transition-colors" title="Refresh File Tree">
+          <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
+        </button>
+      </div>
+      <div className="pl-2 flex-1 overflow-y-auto">
+        {files.map((file, i) => (
+          <FileTreeItem
+            key={file.path + i}
+            item={file}
+            level={0}
+            onSelect={onSelectFile}
+            activeFile={activeFile}
+          />
+        ))}
+        {files.length === 0 && !loading && (
+          <div className="text-xs text-gray-600 italic p-2">Empty directory</div>
+        )}
+      </div>
     </div>
   );
 };

@@ -2,6 +2,7 @@ import { Type } from "@google/genai";
 import { SubTask, ToolDefinition } from "../../types";
 import { LLMClient } from "../llm";
 import { ContextManager } from "../contextManager";
+import { Prompts } from "../prompts";
 
 export class DecompositionService {
     constructor(
@@ -14,49 +15,22 @@ export class DecompositionService {
             console.log("[Decomposition] No LLM Client. Using Mock.");
             await new Promise(r => setTimeout(r, 1000));
             return [
-                { id: "1", description: "Setup Project Config", fileTarget: "package.json", dependencies: [] }
+                {
+                    id: "1",
+                    description: "Setup Project Config",
+                    fileTarget: "package.json",
+                    dependencies: [],
+                    role: "ConfigSpecialist",
+                    roleDescription: "Expert in Node.js configuration"
+                }
             ];
         }
 
         try {
             console.log("[Decomposition] Analyzing request...");
 
-            const context = await this.contextManager.getArchitectContext(prompt);
-
-            const scoutedInfo = context.scoutedFiles.length > 0
-                ? `\nRELEVANT FILES FOUND:\n${context.scoutedFiles.map(f => `FILE: ${f.path}\n${f.content}`).join('\n')}`
-                : "";
-
-            const toolsInfo = tools.length > 0
-                ? `\nAVAILABLE TOOLS:\n${tools.map(t => `- Name: ${t.name}\n  Description: ${t.description}\n  Args: ${t.command.match(/{{(.*?)}}/g)?.join(', ') || 'None'}`).join('\n')}`
-                : "";
-
-            const systemPrompt = `
-                SYSTEM: You are the Lead Architect of the MAKER Framework.
-                GOAL: Decompose the user's request into a set of ATOMIC steps.
-                
-                PROJECT CONTEXT:
-                - Manifests: ${context.manifests}
-                - File Tree:
-                ${context.fileTree}
-                ${scoutedInfo}
-                ${toolsInfo}
-                
-                RULES:
-                1. Granularity: Each step must touch ONLY ONE file OR execute ONE tool.
-                2. Dependencies: Build a logical dependency graph.
-                3. Tool Usage: If a tool is available and relevant (e.g. 'run_tests'), use it.
-                4. Output: STRICT JSON Array.
-                
-                SCHEMA:
-                {
-                    id: string,
-                    description: string,
-                    fileTarget: string,
-                    dependencies: string[],
-                    toolCall?: { toolName: string, arguments: { [key: string]: string } }
-                }
-            `;
+            const context = await this.contextManager.getArchitectContext(prompt, tools);
+            const systemPrompt = Prompts.DECOMPOSITION_SYSTEM(context);
 
             const schema = {
                 type: Type.ARRAY,
@@ -67,6 +41,8 @@ export class DecompositionService {
                         description: { type: Type.STRING },
                         fileTarget: { type: Type.STRING },
                         dependencies: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        role: { type: Type.STRING, description: "The specific persona needed (e.g. PythonExpert)" },
+                        roleDescription: { type: Type.STRING, description: "Description of the persona's expertise" },
                         toolCall: {
                             type: Type.OBJECT,
                             properties: {
@@ -74,9 +50,10 @@ export class DecompositionService {
                                 arguments: { type: Type.OBJECT }
                             },
                             required: ["toolName", "arguments"]
-                        }
+                        },
+                        riskReason: { type: Type.STRING }
                     },
-                    required: ["id", "description", "fileTarget", "dependencies"]
+                    required: ["id", "description", "fileTarget", "dependencies", "role"]
                 }
             };
 
@@ -93,7 +70,6 @@ export class DecompositionService {
 
         } catch (e: any) {
             console.error("AI Decomposition failed:", e);
-            // FIX: Propagate the actual error message so it appears in the UI
             throw new Error(`AI Decomposition failed: ${e.message || JSON.stringify(e)}`);
         }
     }
@@ -103,22 +79,7 @@ export class DecompositionService {
 
         console.log(`[Re-planning] Attempting to rescue step: ${failedStep.description}`);
 
-        const systemPrompt = `
-            SYSTEM: You are the Crisis Manager of the MAKER Framework.
-            SITUATION: An agent failed to execute a step.
-            GOAL: Break down the FAILED STEP into smaller, simpler sub-steps to resolve the error.
-            
-            FAILED STEP: "${failedStep.description}"
-            TARGET FILE: ${failedStep.fileTarget}
-            ERROR LOG:
-            ${errorLog}
-            
-            RULES:
-            1. Analyze the error. Is it a missing file? A syntax error? A logic error?
-            2. Create 1-3 new atomic steps to fix the issue.
-            3. If the error is unrecoverable (e.g. "API Key invalid"), return an empty array.
-            4. Output: STRICT JSON Array of new steps.
-        `;
+        const systemPrompt = Prompts.REPLAN_SYSTEM(failedStep.description, errorLog);
 
         const schema = {
             type: Type.ARRAY,
@@ -129,6 +90,8 @@ export class DecompositionService {
                     description: { type: Type.STRING },
                     fileTarget: { type: Type.STRING },
                     dependencies: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    role: { type: Type.STRING },
+                    roleDescription: { type: Type.STRING },
                     riskReason: { type: Type.STRING }
                 },
                 required: ["id", "description", "fileTarget", "dependencies"]
@@ -151,7 +114,6 @@ export class DecompositionService {
             return newSteps.map((s: any) => ({
                 ...s,
                 id: `${failedStep.id}-rescue-${Math.random().toString(36).substr(2, 4)}`,
-                // Inherit dependencies from the failed step plus any internal sequence
                 dependencies: s.dependencies.length ? s.dependencies : failedStep.dependencies
             }));
 

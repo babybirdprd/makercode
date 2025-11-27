@@ -37,6 +37,21 @@
           "args": true
         },
         {
+          "name": "rg",
+          "cmd": "rg",
+          "args": true
+        },
+        {
+          "name": "powershell",
+          "cmd": "powershell",
+          "args": true
+        },
+        {
+          "name": "cmd",
+          "cmd": "cmd",
+          "args": true
+        },
+        {
           "name": "npx",
           "cmd": "npx",
           "args": true
@@ -62,23 +77,8 @@
           "args": true
         },
         {
-          "name": "python3",
-          "cmd": "python3",
-          "args": true
-        },
-        {
           "name": "pip",
           "cmd": "pip",
-          "args": true
-        },
-        {
-          "name": "ls",
-          "cmd": "ls",
-          "args": true
-        },
-        {
-          "name": "echo",
-          "cmd": "echo",
           "args": true
         },
         {
@@ -97,6 +97,21 @@
           "args": true
         },
         {
+          "name": "rg",
+          "cmd": "rg",
+          "args": true
+        },
+        {
+          "name": "powershell",
+          "cmd": "powershell",
+          "args": true
+        },
+        {
+          "name": "cmd",
+          "cmd": "cmd",
+          "args": true
+        },
+        {
           "name": "npx",
           "cmd": "npx",
           "args": true
@@ -122,23 +137,8 @@
           "args": true
         },
         {
-          "name": "python3",
-          "cmd": "python3",
-          "args": true
-        },
-        {
           "name": "pip",
           "cmd": "pip",
-          "args": true
-        },
-        {
-          "name": "ls",
-          "cmd": "ls",
-          "args": true
-        },
-        {
-          "name": "echo",
-          "cmd": "echo",
           "args": true
         },
         {

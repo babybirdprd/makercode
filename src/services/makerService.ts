@@ -1,5 +1,5 @@
 import { Type } from "@google/genai";
-import { SubTask, AgentStatus, TaskStatus, MakerConfig, AgentProfile } from "../types";
+import { SubTask, AgentStatus, TaskStatus, MakerConfig, AgentProfile, ExecutionTrace } from "../types";
 import { MockTauriService } from "./tauriBridge";
 import { GitService } from "./gitService";
 import { VirtualFileSystem } from "./virtualFileSystem";
@@ -9,6 +9,7 @@ import { LanguageRegistry } from "./languages/registry";
 import { DecompositionService } from "./engine/decompositionService";
 import { VotingService } from "./engine/votingService";
 import { ToolService } from "./toolService";
+import { Prompts } from "./prompts";
 
 export class MakerEngine {
     private llm: LLMClient | null = null;
@@ -134,7 +135,9 @@ export class MakerEngine {
             if (!status.isRepo) await this.git.initRepo();
             if (status.isDirty) await this.git.createCheckpoint("Auto-Checkpoint before Task Start");
 
-            const decomposition = await this.decomposer.decompose(prompt, this.config.tools || []);
+            // Combine System Tools + User Tools
+            const allTools = this.toolService.getAvailableTools(this.config.tools || []);
+            const decomposition = await this.decomposer.decompose(prompt, allTools);
 
             this.state.decomposition = decomposition.map(d => ({
                 id: d.id || Math.random().toString(36).substring(2, 10),
@@ -147,6 +150,8 @@ export class MakerEngine {
                 logs: [],
                 dependencies: d.dependencies || [],
                 riskReason: d.riskReason,
+                role: d.role,
+                roleDescription: d.roleDescription,
                 candidates: [],
                 toolCall: d.toolCall
             }));
@@ -232,7 +237,8 @@ export class MakerEngine {
 
             if (step.toolCall) {
                 this.updateStepStatus(index, AgentStatus.EXECUTING);
-                const toolDef = this.config.tools?.find(t => t.name === step.toolCall?.toolName);
+                const allTools = this.toolService.getAvailableTools(this.config.tools || []);
+                const toolDef = allTools.find(t => t.name === step.toolCall?.toolName);
 
                 if (!toolDef) {
                     throw new Error(`Tool '${step.toolCall.toolName}' not found in registry.`);
@@ -240,7 +246,9 @@ export class MakerEngine {
 
                 const cwd = worktreeInfo ? worktreeInfo.path : vfs.getRoot() || ".";
 
-                const outputFile = step.fileTarget && !step.fileTarget.endsWith('.ts') ? step.fileTarget : undefined;
+                // FIX: Do not write tool output if target is a directory or root
+                const isDirectory = step.fileTarget.endsWith('/') || step.fileTarget === '.' || step.fileTarget === './';
+                const outputFile = !isDirectory && step.fileTarget ? step.fileTarget : undefined;
 
                 const output = await this.toolService.executeTool(toolDef, step.toolCall, cwd, outputFile);
 
@@ -250,8 +258,11 @@ export class MakerEngine {
                 this.state.completedSteps++;
 
                 if (this.config.useGitWorktrees && worktreeInfo) {
-                    await this.git.createCheckpoint(step.description, ['.'], worktreeInfo.path);
-                    await this.git.mergeWorktreeToMain(worktreeInfo.branch, `Executed Tool: ${step.description}`);
+                    // Only checkpoint if we actually wrote a file
+                    if (outputFile) {
+                        await this.git.createCheckpoint(step.description, ['.'], worktreeInfo.path);
+                        await this.git.mergeWorktreeToMain(worktreeInfo.branch, `Executed Tool: ${step.description}`);
+                    }
                     await this.git.cleanupWorktree(worktreeInfo.path, worktreeInfo.branch);
                 }
                 this.notify();
@@ -266,29 +277,54 @@ export class MakerEngine {
                 .map(s => s.fileTarget);
 
             let context = await this.contextManager.getTaskContext(step.fileTarget, dependencyFiles);
+            const fullContext = await this.contextManager.getArchitectContext(step.description, []);
 
             const shouldVote = riskAssessment.score > Math.min(this.config.riskThreshold, agent.riskTolerance + 0.3);
             let content = "";
+            let traceData: ExecutionTrace | undefined;
 
             if (shouldVote && this.llm) {
                 this.updateStepStatus(index, AgentStatus.VOTING);
                 const result = await this.voter.performVoting(step, agent, context, this.config.agentProfiles,
-                    (a) => this.generateCode(step, a, context)
+                    async (a) => {
+                        const res = await this.generateCode(step, a, context, fullContext);
+                        return res.content;
+                    }
                 );
                 this.updateStepStatus(index, AgentStatus.VOTING, { candidates: result.candidates });
 
                 if (!result.isConsensus || !result.winner) {
-                    content = result.candidates.find(c => c.agentName === agent.name)?.content || "";
+                    const fallback = result.candidates.find(c => c.agentName === agent.name);
+                    content = fallback?.content || "";
                     if (!content) throw new Error("Consensus failed.");
                 } else {
                     content = result.winner;
                 }
             } else {
                 this.updateStepStatus(index, AgentStatus.SKIPPED_VOTE);
-                content = await this.generateCode(step, agent, context);
+                const genResult = await this.generateCode(step, agent, context, fullContext);
+                content = genResult.content;
+                traceData = genResult.trace;
             }
 
-            this.updateStepStatus(index, AgentStatus.EXECUTING);
+            // RED FLAG CHECK
+            const redFlags: string[] = [];
+            if (fullContext.primaryLanguage === 'python' && content.includes('npm install')) {
+                redFlags.push("Hallucination: npm in Python project");
+            }
+            if (fullContext.primaryLanguage === 'rust' && content.includes('pip install')) {
+                redFlags.push("Hallucination: pip in Rust project");
+            }
+            if (content.length > 50000) {
+                redFlags.push("Output too large (>50k chars)");
+            }
+
+            if (redFlags.length > 0) {
+                if (traceData) traceData.redFlags = redFlags;
+                throw new Error(`Red Flags Detected: ${redFlags.join(', ')}`);
+            }
+
+            this.updateStepStatus(index, AgentStatus.EXECUTING, { trace: traceData });
             const targetPath = worktreeInfo ? `${worktreeInfo.path}/${step.fileTarget}` : step.fileTarget;
 
             const dir = targetPath.substring(0, targetPath.lastIndexOf('/'));
@@ -322,7 +358,8 @@ export class MakerEngine {
                         logs: [...(this.state.decomposition[index].logs || []), `[AutoFix] ${provider?.id} Linter failed: ${errorMsg}. Retrying...`]
                     });
 
-                    content = await this.generateCode(step, agent, context, lintErrors.join('\n'));
+                    const retryResult = await this.generateCode(step, agent, context, fullContext, lintErrors.join('\n'));
+                    content = retryResult.content;
                     await MockTauriService.writeFile(targetPath, content);
                     lintAttempts++;
                 } else {
@@ -363,9 +400,7 @@ export class MakerEngine {
 
             this.updateStepStatus(index, AgentStatus.CHECKPOINTING);
             if (this.config.useGitWorktrees && worktreeInfo) {
-                // FIXED: Commit inside the worktree before merging
                 await this.git.createCheckpoint(step.description, ['.'], worktreeInfo.path);
-
                 this.updateStepStatus(index, AgentStatus.MERGING);
                 const mergeSuccess = await this.git.mergeWorktreeToMain(worktreeInfo.branch, step.description);
                 if (!mergeSuccess) throw new Error("Merge Conflict.");
@@ -378,7 +413,6 @@ export class MakerEngine {
             this.state.completedSteps++;
 
         } catch (e: any) {
-            // LOGGING FIX: Capture execution failures
             console.error(`[MakerEngine] Step ${index} Failed:`, e);
 
             this.failStep(index, e.message || "Unknown error");
@@ -390,27 +424,46 @@ export class MakerEngine {
         }
     }
 
-    private async generateCode(step: SubTask, agent: AgentProfile, context: string, feedback?: string): Promise<string> {
-        if (!this.llm) return `// Mock Content`;
+    private async generateCode(step: SubTask, agent: AgentProfile, context: string, fullContext: any, feedback?: string): Promise<{ content: string, trace: ExecutionTrace }> {
+        if (!this.llm) return { content: `// Mock Content`, trace: {} as any };
         try {
-            const systemPrompt = `
-                ROLE: You are ${agent.name}, a ${agent.role} engineer.
-                TASK: Write the code for file "${step.fileTarget}".
-                CONTEXT: Use idiomatic patterns for the target language. Write FULL file content.
-            `;
+            const ext = step.fileTarget.split('.').pop() || "text";
+            const langMap: Record<string, string> = {
+                'ts': 'TypeScript', 'tsx': 'TypeScript/React', 'js': 'JavaScript',
+                'py': 'Python', 'rs': 'Rust', 'md': 'Markdown', 'json': 'JSON'
+            };
+            const language = langMap[ext] || "Code";
+
+            const roleName = step.role || agent.role;
+            const roleDesc = step.roleDescription || agent.name;
+
+            const systemPrompt = Prompts.MICRO_ROLE_SYSTEM(roleName, roleDesc, language, fullContext);
+
             const userPrompt = `
                 DESCRIPTION: ${step.description}
+                TARGET FILE: ${step.fileTarget}
                 --- RELEVANT CODEBASE CONTEXT ---
                 ${context}
                 ${feedback ? `--- PREVIOUS ERRORS (FIX THESE) ---\n${feedback}` : ''}
             `;
+
             const response = await this.llm.generate(systemPrompt, userPrompt);
             let text = response.text || "";
             if (text.startsWith('```')) text = text.replace(/^```[a-z]*\n/i, '').replace(/\n```$/, '');
-            return text;
+
+            const trace: ExecutionTrace = {
+                agentId: agent.id,
+                agentPersona: roleName,
+                timestamp: Date.now(),
+                finalPrompt: systemPrompt + "\n\n" + userPrompt,
+                rawResponse: response.text,
+                redFlags: []
+            };
+
+            return { content: text, trace };
         } catch (e) {
             console.warn("AI Generation failed:", e);
-            return "// Generation Failed";
+            return { content: "// Generation Failed", trace: {} as any };
         }
     }
 

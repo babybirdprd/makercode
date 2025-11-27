@@ -3,14 +3,54 @@ import { MockTauriService } from "./tauriBridge";
 
 export class ToolService {
     private static instance: ToolService;
+    private systemTools: ToolDefinition[] = [];
 
-    private constructor() { }
+    private constructor() {
+        this.registerSystemTools();
+    }
 
     public static getInstance(): ToolService {
         if (!ToolService.instance) {
             ToolService.instance = new ToolService();
         }
         return ToolService.instance;
+    }
+
+    private registerSystemTools() {
+        this.systemTools = [
+            {
+                id: "sys_ls",
+                name: "ls",
+                description: "List files in the project (respects .gitignore)",
+                // We use git ls-files because it works cross-platform if git is installed, 
+                // and it filters out node_modules garbage automatically.
+                command: "git ls-files --full-name",
+                requiresApproval: false,
+                isSystem: true
+            },
+            {
+                id: "sys_read",
+                name: "read_file",
+                description: "Read the contents of a file",
+                // We use a custom 'read_file' pseudo-command that we intercept in executeTool
+                // This avoids 'cat' vs 'type' issues on Windows
+                command: "__INTERNAL_READ_FILE__ {{path}}",
+                requiresApproval: false,
+                isSystem: true
+            },
+            {
+                id: "sys_grep",
+                name: "grep",
+                description: "Search for patterns in files using Ripgrep (rg)",
+                command: "rg -n --no-heading \"{{pattern}}\" {{path}}",
+                requiresApproval: false,
+                isSystem: true
+            }
+        ];
+    }
+
+    public getAvailableTools(customTools: ToolDefinition[]): ToolDefinition[] {
+        return [...this.systemTools, ...customTools];
     }
 
     /**
@@ -22,22 +62,39 @@ export class ToolService {
         // 1. Interpolate Arguments
         let commandStr = tool.command;
         for (const [key, value] of Object.entries(call.arguments)) {
+            // Basic sanitization
             const safeValue = value.replace(/"/g, '\\"');
             commandStr = commandStr.replace(new RegExp(`{{${key}}}`, 'g'), safeValue);
         }
 
-        // 2. Parse Command
+        // Handle optional path defaults if missing
+        commandStr = commandStr.replace('{{path}}', '.');
+
+        // 2. Intercept Internal Commands
+        if (commandStr.startsWith('__INTERNAL_READ_FILE__')) {
+            const filePath = commandStr.replace('__INTERNAL_READ_FILE__', '').trim();
+            // Resolve path relative to CWD
+            const fullPath = filePath.startsWith('/') || filePath.match(/^[a-zA-Z]:/) ? filePath : `${cwd}/${filePath}`;
+            try {
+                return await MockTauriService.readFile(fullPath);
+            } catch (e: any) {
+                return `Error reading file: ${e.message}`;
+            }
+        }
+
+        // 3. Parse Command
+        // This regex splits by spaces but respects quotes
         const parts = commandStr.match(/(?:[^\s"]+|"[^"]*")+/g)?.map(s => s.replace(/"/g, '')) || [];
         if (parts.length === 0) throw new Error("Tool command empty.");
 
         const cmd = parts[0];
         const args = parts.slice(1);
 
-        // 3. Execute
+        // 4. Execute
         try {
             const output = await MockTauriService.executeShell(cmd, args, cwd);
 
-            // 4. Output Redirection (Context Persistence)
+            // 5. Output Redirection (Context Persistence)
             if (outputFile && outputFile !== 'stdout' && outputFile !== 'stderr') {
                 console.log(`[ToolService] Saving output to ${outputFile}`);
                 // Ensure path is absolute or relative to cwd
@@ -49,18 +106,5 @@ export class ToolService {
         } catch (e: any) {
             throw new Error(`Tool execution failed: ${e.message}`);
         }
-    }
-
-    validateToolCall(tool: ToolDefinition, call: ToolCall): string | null {
-        const matches = tool.command.match(/{{(.*?)}}/g);
-        if (!matches) return null;
-
-        for (const match of matches) {
-            const key = match.replace(/{{|}}/g, '');
-            if (!call.arguments[key]) {
-                return `Missing argument: ${key}`;
-            }
-        }
-        return null;
     }
 }

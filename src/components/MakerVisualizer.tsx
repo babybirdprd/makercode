@@ -1,8 +1,9 @@
-
 import React, { useState } from 'react';
 import { SubTask, AgentStatus, TaskStatus, MakerConfig } from '../types';
-import { CheckCircle, Circle, AlertCircle, Loader2, Cpu, Zap, ShieldAlert, GitBranch, GitMerge, Clock, Save, Eye, ClipboardList } from 'lucide-react';
+import { CheckCircle, Circle, AlertCircle, Loader2, Cpu, Zap, ShieldAlert, GitBranch, GitMerge, Clock, Save, Eye, ClipboardList, Terminal, Download } from 'lucide-react';
 import { VotingInspector } from './VotingInspector';
+import { StepDetailView } from './StepDetailView';
+import { MockTauriService } from '../services/tauriBridge';
 
 interface MakerVisualizerProps {
   state: TaskStatus | null;
@@ -11,6 +12,28 @@ interface MakerVisualizerProps {
 
 export const MakerVisualizer: React.FC<MakerVisualizerProps> = ({ state, config }) => {
   const [inspectingStep, setInspectingStep] = useState<SubTask | null>(null);
+  const [detailStep, setDetailStep] = useState<SubTask | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+
+  const handleExportLogs = async () => {
+    if (!state) return;
+    setIsExporting(true);
+    try {
+      const filename = `maker_trace_${Date.now()}.json`;
+      const path = await MockTauriService.saveDialog(filename);
+
+      if (path) {
+        const content = JSON.stringify(state, null, 2);
+        await MockTauriService.writeFile(path, content);
+        // Note: We don't have a toast function here, but the file saving is explicit
+        console.log(`Logs saved to ${path}`);
+      }
+    } catch (e) {
+      console.error("Failed to export logs:", e);
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   if (!state || state.decomposition.length === 0) {
     return (
@@ -33,7 +56,23 @@ export const MakerVisualizer: React.FC<MakerVisualizerProps> = ({ state, config 
         <VotingInspector step={inspectingStep} onClose={() => setInspectingStep(null)} />
       )}
 
+      {detailStep && (
+        <StepDetailView step={detailStep} onClose={() => setDetailStep(null)} />
+      )}
+
       <div className="max-w-3xl mx-auto">
+
+        {/* Header Controls */}
+        <div className="flex justify-end mb-4">
+          <button
+            onClick={handleExportLogs}
+            disabled={isExporting}
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-sm text-xs font-medium transition-colors border border-gray-700 disabled:opacity-50"
+          >
+            {isExporting ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+            Export Debug Logs
+          </button>
+        </div>
 
         {/* Planning Mode Banner */}
         {state.isPlanning && (
@@ -73,7 +112,8 @@ export const MakerVisualizer: React.FC<MakerVisualizerProps> = ({ state, config 
               key={step.id}
               step={step}
               index={idx}
-              onInspect={() => step.status === AgentStatus.PASSED || step.status === AgentStatus.VOTING ? setInspectingStep(step) : null}
+              onInspectVote={() => step.status === AgentStatus.PASSED || step.status === AgentStatus.VOTING ? setInspectingStep(step) : null}
+              onViewDetails={() => setDetailStep(step)}
             />
           ))}
         </div>
@@ -82,7 +122,7 @@ export const MakerVisualizer: React.FC<MakerVisualizerProps> = ({ state, config 
   );
 };
 
-const StepCard: React.FC<{ step: SubTask; index: number; onInspect: () => void }> = ({ step, index, onInspect }) => {
+const StepCard: React.FC<{ step: SubTask; index: number; onInspectVote: () => void; onViewDetails: () => void }> = ({ step, index, onInspectVote, onViewDetails }) => {
   const getStatusColor = (s: AgentStatus) => {
     switch (s) {
       case AgentStatus.PLANNING: return 'border-indigo-500/30 bg-indigo-900/5 text-gray-400';
@@ -118,7 +158,7 @@ const StepCard: React.FC<{ step: SubTask; index: number; onInspect: () => void }
     }
   };
 
-  const isInspectable = (step.status === AgentStatus.PASSED || step.status === AgentStatus.VOTING) && step.candidates && step.candidates.length > 0;
+  const isVoteInspectable = (step.status === AgentStatus.PASSED || step.status === AgentStatus.VOTING) && step.candidates && step.candidates.length > 0;
 
   return (
     <div className={`relative z-10 flex items-start gap-4 transition-all duration-500 ${step.status === AgentStatus.QUEUED ? 'opacity-60' : 'opacity-100'}`}>
@@ -135,25 +175,33 @@ const StepCard: React.FC<{ step: SubTask; index: number; onInspect: () => void }
           <div className="flex flex-col">
             <h3 className="font-semibold text-sm flex items-center gap-2">
               Step {index + 1}: {step.description}
-              {isInspectable && (
-                <button
-                  onClick={onInspect}
-                  className="p-1 rounded-sm hover:bg-white/10 text-white/50 hover:text-white transition-colors"
-                  title="Inspect Voting Consensus"
-                >
-                  <Eye size={14} />
-                </button>
-              )}
             </h3>
-            {step.riskReason && step.status !== AgentStatus.PLANNING && (
-              <span className="text-[10px] text-gray-400 mt-0.5 flex items-center gap-1">
-                Risk Analysis: {step.riskScore > 0.5 ? <span className="text-red-400 font-bold">HIGH</span> : <span className="text-green-400 font-bold">LOW</span>} ({step.riskScore.toFixed(2)}) - {step.riskReason}
-              </span>
-            )}
+            <div className="flex items-center gap-2 mt-1">
+              {step.riskReason && step.status !== AgentStatus.PLANNING && (
+                <span className="text-[10px] text-gray-400 flex items-center gap-1">
+                  Risk: {step.riskScore > 0.5 ? <span className="text-red-400 font-bold">HIGH</span> : <span className="text-green-400 font-bold">LOW</span>}
+                </span>
+              )}
+              {step.role && (
+                <span className="text-[9px] bg-indigo-900/40 text-indigo-300 px-1.5 py-0.5 rounded-sm uppercase tracking-wider border border-indigo-500/20">
+                  {step.role}
+                </span>
+              )}
+            </div>
           </div>
-          <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-sm bg-gray-950/30 border border-white/5">
-            {step.status.replace('_', ' ')}
-          </span>
+
+          <div className="flex gap-2">
+            <button
+              onClick={onViewDetails}
+              className="p-1.5 rounded-sm bg-gray-900/50 hover:bg-white/10 text-gray-400 hover:text-white transition-colors border border-gray-800"
+              title="View Flight Recorder"
+            >
+              <Terminal size={12} />
+            </button>
+            <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-sm bg-gray-950/30 border border-white/5 self-center">
+              {step.status.replace('_', ' ')}
+            </span>
+          </div>
         </div>
 
         {/* Git Branch Info */}
@@ -173,8 +221,8 @@ const StepCard: React.FC<{ step: SubTask; index: number; onInspect: () => void }
         {/* Voting Visuals */}
         {(step.status === AgentStatus.VOTING || (step.status === AgentStatus.PASSED && step.riskScore > 0.5)) && (
           <div
-            className={`mt-2 pt-2 border-t border-gray-700/50 ${isInspectable ? 'cursor-pointer hover:bg-white/5 p-2 -mx-2 rounded-sm transition-colors' : ''}`}
-            onClick={isInspectable ? onInspect : undefined}
+            className={`mt-2 pt-2 border-t border-gray-700/50 ${isVoteInspectable ? 'cursor-pointer hover:bg-white/5 p-2 -mx-2 rounded-sm transition-colors' : ''}`}
+            onClick={isVoteInspectable ? onInspectVote : undefined}
           >
             <div className="flex items-center gap-2 mb-1">
               <span className="text-[10px] uppercase font-bold text-gray-500">MAKER Consensus Engine</span>
@@ -188,22 +236,7 @@ const StepCard: React.FC<{ step: SubTask; index: number; onInspect: () => void }
                 </div>
               ))}
             </div>
-            {isInspectable && <div className="text-[9px] text-center text-gray-600 mt-1">Click to inspect candidates</div>}
-          </div>
-        )}
-
-        {/* Logs (Linter & Errors) */}
-        {step.logs.length > 0 && (
-          <div className={`mt-2 pt-2 border-t ${step.status === AgentStatus.FAILED ? 'border-red-900/30' : 'border-gray-800'}`}>
-            {step.logs.map((log, i) => (
-              <div key={i} className={`text-[10px] font-mono mb-0.5 ${log.includes("Error") || log.includes("failed") ? 'text-red-400' :
-                log.includes("AutoFix") ? 'text-blue-400' :
-                  log.includes("verified") ? 'text-green-500' :
-                    'text-gray-500'
-                }`}>
-                {log}
-              </div>
-            ))}
+            {isVoteInspectable && <div className="text-[9px] text-center text-gray-600 mt-1">Click to inspect candidates</div>}
           </div>
         )}
       </div>

@@ -30,6 +30,7 @@ export interface ToolDefinition {
     description: string;
     command: string; // e.g. "npm run test -- {{file}}"
     requiresApproval: boolean;
+    isSystem?: boolean; // New: Marks hardwired tools
 }
 
 export interface ToolCall {
@@ -37,16 +38,36 @@ export interface ToolCall {
     arguments: Record<string, string>;
 }
 
+export interface ExecutionTrace {
+    agentId: string;
+    agentPersona: string; // The Micro-Role used
+    timestamp: number;
+    finalPrompt: string;  // The exact context sent to LLM
+    rawResponse: string;  // The raw output
+    redFlags: string[];   // Any warnings triggered
+    usage?: {
+        inputTokens: number;
+        outputTokens: number;
+    };
+}
+
 export interface SubTask {
     id: string;
     description: string;
-    fileTarget: string; // If tool, this might be the output log file
+    fileTarget: string;
     status: AgentStatus;
     attempts: number;
     votes: number;
     riskScore: number;
     riskReason?: string;
     logs: string[];
+
+    // Micro-Role Assignment
+    role?: string;
+    roleDescription?: string;
+
+    // Execution Data (The Flight Recorder)
+    trace?: ExecutionTrace;
 
     // Tool Integration
     toolCall?: ToolCall;

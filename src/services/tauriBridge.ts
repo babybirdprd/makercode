@@ -1,4 +1,4 @@
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { readDir, readTextFile, writeTextFile, mkdir, watch } from '@tauri-apps/plugin-fs';
 import { Command } from '@tauri-apps/plugin-shell';
 
@@ -13,6 +13,9 @@ declare global {
 class BrowserShim {
   static async open(): Promise<string | null> {
     return prompt("Enter mock project path (Web Mode):", "/mock/project");
+  }
+  static async save(defaultName: string): Promise<string | null> {
+    return prompt("Enter save path (Web Mode):", defaultName);
   }
   static async readDir(path: string): Promise<any[]> {
     console.log(`[Shim] readDir: ${path}`);
@@ -52,6 +55,25 @@ export class MockTauriService {
     return BrowserShim.open();
   }
 
+  static async saveDialog(defaultName: string): Promise<string | null> {
+    if (this.isTauri()) {
+      try {
+        const selected = await save({
+          defaultPath: defaultName,
+          filters: [{
+            name: 'JSON',
+            extensions: ['json']
+          }]
+        });
+        return selected as string | null;
+      } catch (e) {
+        console.error("Save Dialog failed:", e);
+        return null;
+      }
+    }
+    return BrowserShim.save(defaultName);
+  }
+
   static async listFiles(path: string): Promise<any[]> {
     if (this.isTauri()) {
       try {
@@ -82,7 +104,8 @@ export class MockTauriService {
       try {
         return await readTextFile(path);
       } catch (e) {
-        console.error(`Failed to read file ${path}:`, e);
+        // Suppress error log for file not found (common in scanning)
+        // console.error(`Failed to read file ${path}:`, e);
         throw e;
       }
     }
@@ -131,6 +154,9 @@ export class MockTauriService {
         let cmd: Command<string>;
 
         if (command === 'git') cmd = Command.create('git', args, { cwd });
+        else if (command === 'rg') cmd = Command.create('rg', args, { cwd });
+        else if (command === 'powershell') cmd = Command.create('powershell', args, { cwd });
+        else if (command === 'cmd') cmd = Command.create('cmd', args, { cwd });
         else if (command === 'npx') cmd = Command.create('npx', args, { cwd });
         else if (command === 'npm') cmd = Command.create('npm', args, { cwd });
         else {

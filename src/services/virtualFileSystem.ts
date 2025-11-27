@@ -23,7 +23,8 @@ export class VirtualFileSystem {
     }
 
     async setRoot(path: string) {
-        this.projectRoot = path;
+        // Normalize root path immediately: replace backslashes and remove trailing slashes
+        this.projectRoot = path.replace(/\\/g, '/').replace(/\/$/, '');
         this.fileCache.clear();
 
         if (this.unwatchFn) {
@@ -31,11 +32,24 @@ export class VirtualFileSystem {
             this.unwatchFn = null;
         }
 
-        this.unwatchFn = await MockTauriService.watchPath(path, (event) => {
-            this.handleDiskChange(event);
-        });
+        try {
+            // Watch the normalized path
+            this.unwatchFn = await MockTauriService.watchPath(this.projectRoot, (event) => {
+                this.handleDiskChange(event);
+            });
+            console.log(`[VFS] Watcher started on ${this.projectRoot}`);
+        } catch (e) {
+            console.warn("[VFS] Failed to start watcher. Manual refresh required.", e);
+        }
 
         this.notify();
+    }
+
+    async refresh() {
+        if (this.projectRoot) {
+            console.log("[VFS] Refreshing file tree...");
+            this.notify();
+        }
     }
 
     private handleDiskChange(event: any) {
@@ -43,7 +57,7 @@ export class VirtualFileSystem {
         this.debounceTimer = setTimeout(() => {
             console.log("[VFS] Disk change detected:", event);
             this.notify();
-        }, 300);
+        }, 500);
     }
 
     getRoot(): string | null {
@@ -94,14 +108,38 @@ export class VirtualFileSystem {
 
     async getDirectoryTree(): Promise<any[]> {
         if (!this.projectRoot) return this.buildTreeFromCache();
+        return this.scanDir(this.projectRoot, '');
+    }
 
+    private async scanDir(absolutePath: string, relativePath: string): Promise<any[]> {
         try {
-            const entries = await MockTauriService.listFiles(this.projectRoot);
-            const nodes = entries.map((entry: any) => ({
-                name: entry.name,
-                path: `/${entry.name}`,
-                isDirectory: entry.isDirectory,
-                children: entry.isDirectory ? [] : undefined
+            const entries = await MockTauriService.listFiles(absolutePath);
+
+            const nodes = await Promise.all(entries.map(async (entry: any) => {
+                const entryRelativePath = relativePath
+                    ? `${relativePath}/${entry.name}`
+                    : `/${entry.name}`;
+
+                const entryAbsolutePath = `${absolutePath}/${entry.name}`;
+
+                const node: any = {
+                    name: entry.name,
+                    path: entryRelativePath,
+                    isDirectory: entry.isDirectory,
+                };
+
+                if (entry.isDirectory) {
+                    if (['node_modules', '.git', 'target', 'dist', 'build', '.maker', '__pycache__', 'venv', '.vscode'].includes(entry.name)) {
+                        node.children = [];
+                    } else {
+                        try {
+                            node.children = await this.scanDir(entryAbsolutePath, entryRelativePath);
+                        } catch {
+                            node.children = [];
+                        }
+                    }
+                }
+                return node;
             }));
 
             return nodes.sort((a: any, b: any) => {
@@ -109,7 +147,7 @@ export class VirtualFileSystem {
                 return a.isDirectory ? -1 : 1;
             });
         } catch (e) {
-            console.error("VFS: Failed to scan root", e);
+            console.error(`[VFS] Failed to scan dir ${absolutePath}`, e);
             return [];
         }
     }
@@ -118,16 +156,18 @@ export class VirtualFileSystem {
         // 1. Convert backslashes
         let clean = path.replace(/\\/g, '/');
 
-        // 2. Remove leading ./
+        // 2. Handle root-relative paths carefully
         if (clean.startsWith('./')) clean = clean.substring(2);
 
-        // 3. SECURITY: Prevent directory traversal
-        // We do not allow '..' segments that could escape the project root
+        // 3. Remove trailing slash if it's not root
+        if (clean.length > 1 && clean.endsWith('/')) clean = clean.slice(0, -1);
+
+        // 4. SECURITY: Prevent directory traversal
         if (clean.includes('../') || clean.endsWith('/..') || clean === '..') {
             throw new Error(`Security Violation: Path traversal detected in '${path}'. Access denied.`);
         }
 
-        // 4. Ensure absolute path relative to VFS root
+        // 5. Ensure absolute path relative to VFS root
         return clean.startsWith('/') ? clean : '/' + clean;
     }
 
