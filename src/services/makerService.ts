@@ -1,3 +1,4 @@
+import { Type } from "@google/genai";
 import { SubTask, AgentStatus, TaskStatus, MakerConfig, AgentProfile } from "../types";
 import { MockTauriService } from "./tauriBridge";
 import { GitService } from "./gitService";
@@ -7,7 +8,7 @@ import { ContextManager } from "./contextManager";
 import { LanguageRegistry } from "./languages/registry";
 import { DecompositionService } from "./engine/decompositionService";
 import { VotingService } from "./engine/votingService";
-import { ToolService } from "./toolService"; // New Import
+import { ToolService } from "./toolService";
 
 export class MakerEngine {
     private llm: LLMClient | null = null;
@@ -81,19 +82,30 @@ export class MakerEngine {
     }
 
     updateConfig(newConfig: Partial<MakerConfig>) {
+        console.log("[MakerEngine] updateConfig called. Keys present:",
+            newConfig.openaiApiKey ? "Yes (OpenAI)" : "No",
+            newConfig.geminiApiKey ? "Yes (Gemini)" : "No"
+        );
+
         const prevKey = this.config.geminiApiKey;
         const prevProvider = this.config.llmProvider;
         const prevUrl = this.config.openaiBaseUrl;
+        const prevOpenAiKey = this.config.openaiApiKey;
 
         this.config = { ...this.config, ...newConfig };
 
-        if (newConfig.geminiApiKey !== prevKey || newConfig.llmProvider !== prevProvider || newConfig.openaiBaseUrl !== prevUrl) {
+        if (
+            newConfig.geminiApiKey !== prevKey ||
+            newConfig.llmProvider !== prevProvider ||
+            newConfig.openaiBaseUrl !== prevUrl ||
+            newConfig.openaiApiKey !== prevOpenAiKey
+        ) {
             console.log("[MAKER] Re-initializing LLM Client...");
             this.llm = LLMFactory.create(this.config);
             this.initSubServices();
 
-            if (typeof localStorage !== 'undefined' && this.config.geminiApiKey) {
-                localStorage.setItem('MAKER_API_KEY', this.config.geminiApiKey);
+            if (typeof localStorage !== 'undefined') {
+                if (this.config.geminiApiKey) localStorage.setItem('MAKER_API_KEY', this.config.geminiApiKey);
             }
         }
         this.notify();
@@ -117,12 +129,11 @@ export class MakerEngine {
         };
         this.notify();
 
-        const status = await this.git.getStatus();
-        if (!status.isRepo) await this.git.initRepo();
-        if (status.isDirty) await this.git.createCheckpoint("Auto-Checkpoint before Task Start");
-
         try {
-            // Pass tools to decomposition service
+            const status = await this.git.getStatus();
+            if (!status.isRepo) await this.git.initRepo();
+            if (status.isDirty) await this.git.createCheckpoint("Auto-Checkpoint before Task Start");
+
             const decomposition = await this.decomposer.decompose(prompt, this.config.tools || []);
 
             this.state.decomposition = decomposition.map(d => ({
@@ -137,13 +148,15 @@ export class MakerEngine {
                 dependencies: d.dependencies || [],
                 riskReason: d.riskReason,
                 candidates: [],
-                toolCall: d.toolCall // Pass through tool call
+                toolCall: d.toolCall
             }));
             this.state.totalSteps = this.state.decomposition.length;
             this.notify();
 
         } catch (e: any) {
-            console.error("Fatal Error:", e);
+            // LOGGING FIX: Send to System Logs
+            console.error("[MakerEngine] Start Task Failed:", e);
+
             this.state.errorCount++;
             this.state.decomposition = [{
                 id: "error",
@@ -204,13 +217,13 @@ export class MakerEngine {
         const vfs = VirtualFileSystem.getInstance();
 
         try {
-            // 0. Worktree (Unless Tool Call might be global? No, keep isolation)
             if (this.config.useGitWorktrees) {
                 this.updateStepStatus(index, AgentStatus.IDLE);
                 try {
                     worktreeInfo = await this.git.createWorktree(this.state.taskId, step.id);
                     this.updateStepStatus(index, AgentStatus.ANALYZING, { gitBranch: worktreeInfo.branch, worktreePath: worktreeInfo.path });
                 } catch (e: any) {
+                    console.error("[MakerEngine] Worktree Creation Failed:", e);
                     this.updateStepStatus(index, AgentStatus.FAILED, { logs: [`Worktree failed: ${e.message}`] });
                     return;
                 }
@@ -218,7 +231,6 @@ export class MakerEngine {
                 this.updateStepStatus(index, AgentStatus.ANALYZING);
             }
 
-            // --- TOOL EXECUTION BRANCH ---
             if (step.toolCall) {
                 this.updateStepStatus(index, AgentStatus.EXECUTING);
                 const toolDef = this.config.tools?.find(t => t.name === step.toolCall?.toolName);
@@ -228,14 +240,16 @@ export class MakerEngine {
                 }
 
                 const cwd = worktreeInfo ? worktreeInfo.path : vfs.getRoot() || ".";
-                const output = await this.toolService.executeTool(toolDef, step.toolCall, cwd);
+
+                const outputFile = step.fileTarget && !step.fileTarget.endsWith('.ts') ? step.fileTarget : undefined;
+
+                const output = await this.toolService.executeTool(toolDef, step.toolCall, cwd, outputFile);
 
                 this.updateStepStatus(index, AgentStatus.PASSED, {
                     logs: [`Tool Executed: ${output.substring(0, 200)}...`]
                 });
                 this.state.completedSteps++;
 
-                // Checkpoint & Cleanup
                 if (this.config.useGitWorktrees && worktreeInfo) {
                     await this.git.mergeWorktreeToMain(worktreeInfo.branch, `Executed Tool: ${step.description}`);
                     await this.git.cleanupWorktree(worktreeInfo.path, worktreeInfo.branch);
@@ -243,9 +257,7 @@ export class MakerEngine {
                 this.notify();
                 return;
             }
-            // -----------------------------
 
-            // 1. Analyze Risk & Prepare Context
             const riskAssessment = await this.assessRisk(step, agent);
             this.updateStepStatus(index, AgentStatus.THINKING, { riskScore: riskAssessment.score, riskReason: riskAssessment.reason });
 
@@ -255,7 +267,6 @@ export class MakerEngine {
 
             let context = await this.contextManager.getTaskContext(step.fileTarget, dependencyFiles);
 
-            // 2. Decide Strategy
             const shouldVote = riskAssessment.score > Math.min(this.config.riskThreshold, agent.riskTolerance + 0.3);
             let content = "";
 
@@ -277,7 +288,6 @@ export class MakerEngine {
                 content = await this.generateCode(step, agent, context);
             }
 
-            // 3. Execution
             this.updateStepStatus(index, AgentStatus.EXECUTING);
             const targetPath = worktreeInfo ? `${worktreeInfo.path}/${step.fileTarget}` : step.fileTarget;
 
@@ -286,7 +296,6 @@ export class MakerEngine {
 
             await MockTauriService.writeFile(targetPath, content);
 
-            // 4. Polyglot Validation & Re-planning
             const provider = this.langRegistry.getProvider(targetPath);
             let lintAttempts = 0;
             const maxLintAttempts = this.config.autoFixLinter ? 2 : 0;
@@ -317,11 +326,41 @@ export class MakerEngine {
                     await MockTauriService.writeFile(targetPath, content);
                     lintAttempts++;
                 } else {
-                    throw new Error(`${provider?.id || 'System'} Linter validation failed: ${lintErrors[0]}`);
+                    console.log("Triggering Re-plan due to persistent lint errors...");
+                    const newSteps = await this.decomposer.replan(step, lintErrors.join('\n'));
+
+                    if (newSteps.length > 0) {
+                        const safeNewSteps = newSteps.map(s => ({
+                            id: s.id || `rescue-${Math.random().toString(36).substr(2, 5)}`,
+                            description: s.description || "Rescue Step",
+                            fileTarget: s.fileTarget || step.fileTarget,
+                            status: AgentStatus.QUEUED,
+                            attempts: 0,
+                            votes: 0,
+                            riskScore: 0,
+                            logs: ["Re-planned from failed parent"],
+                            dependencies: s.dependencies || step.dependencies,
+                            candidates: []
+                        }));
+
+                        const newDecomp = [...this.state.decomposition];
+                        newDecomp.splice(index, 1, ...safeNewSteps);
+
+                        this.state.decomposition = newDecomp;
+                        this.state.totalSteps = newDecomp.length;
+
+                        if (worktreeInfo && this.config.useGitWorktrees) {
+                            await this.git.cleanupWorktree(worktreeInfo.path, worktreeInfo.branch);
+                        }
+
+                        this.notify();
+                        return;
+                    } else {
+                        throw new Error(`${provider?.id || 'System'} Linter validation failed: ${lintErrors[0]}`);
+                    }
                 }
             }
 
-            // 5. Checkpointing
             this.updateStepStatus(index, AgentStatus.CHECKPOINTING);
             if (this.config.useGitWorktrees && worktreeInfo) {
                 this.updateStepStatus(index, AgentStatus.MERGING);
@@ -336,6 +375,9 @@ export class MakerEngine {
             this.state.completedSteps++;
 
         } catch (e: any) {
+            // LOGGING FIX: Capture execution failures
+            console.error(`[MakerEngine] Step ${index} Failed:`, e);
+
             this.failStep(index, e.message || "Unknown error");
             if (worktreeInfo && this.config.useGitWorktrees) {
                 await this.git.cleanupWorktree(worktreeInfo.path, worktreeInfo.branch);

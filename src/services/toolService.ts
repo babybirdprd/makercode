@@ -14,41 +14,37 @@ export class ToolService {
     }
 
     /**
-     * Executes a tool based on its definition and the arguments provided by the Agent.
+     * Executes a tool and optionally writes output to a target file.
      */
-    async executeTool(tool: ToolDefinition, call: ToolCall, cwd: string): Promise<string> {
+    async executeTool(tool: ToolDefinition, call: ToolCall, cwd: string, outputFile?: string): Promise<string> {
         console.log(`[ToolService] Executing ${tool.name} in ${cwd}`);
 
         // 1. Interpolate Arguments
-        // Command: "npm run test -- {{file}}"
-        // Args: { file: "src/utils.ts" }
-        // Result: "npm run test -- src/utils.ts"
-
         let commandStr = tool.command;
         for (const [key, value] of Object.entries(call.arguments)) {
-            // Basic sanitization to prevent breaking out of quotes (simple)
             const safeValue = value.replace(/"/g, '\\"');
             commandStr = commandStr.replace(new RegExp(`{{${key}}}`, 'g'), safeValue);
         }
 
-        // 2. Parse Command for Bridge
-        // We need to split "npm run test" into cmd="npm" args=["run", "test"]
-        // This is naive splitting; handling quoted args with spaces requires a proper tokenizer.
-        // For this phase, we assume simple space separation or user provided clean commands.
+        // 2. Parse Command
         const parts = commandStr.match(/(?:[^\s"]+|"[^"]*")+/g)?.map(s => s.replace(/"/g, '')) || [];
-
-        if (parts.length === 0) {
-            throw new Error("Tool command is empty after interpolation.");
-        }
+        if (parts.length === 0) throw new Error("Tool command empty.");
 
         const cmd = parts[0];
         const args = parts.slice(1);
 
         // 3. Execute
         try {
-            // We use executeShell (buffered) because tools are usually discrete steps in a plan
-            // that we want to capture output from to feed back to the agent.
             const output = await MockTauriService.executeShell(cmd, args, cwd);
+
+            // 4. Output Redirection (Context Persistence)
+            if (outputFile && outputFile !== 'stdout' && outputFile !== 'stderr') {
+                console.log(`[ToolService] Saving output to ${outputFile}`);
+                // Ensure path is absolute or relative to cwd
+                const targetPath = outputFile.startsWith('/') ? outputFile : `${cwd}/${outputFile}`;
+                await MockTauriService.writeFile(targetPath, output);
+            }
+
             return output;
         } catch (e: any) {
             throw new Error(`Tool execution failed: ${e.message}`);
@@ -56,7 +52,6 @@ export class ToolService {
     }
 
     validateToolCall(tool: ToolDefinition, call: ToolCall): string | null {
-        // Check if all required placeholders in command are present in args
         const matches = tool.command.match(/{{(.*?)}}/g);
         if (!matches) return null;
 

@@ -1,0 +1,86 @@
+{
+    "identifier": "developer",
+    "description": "Full access for development",
+    "windows": [
+        "main"
+    ],
+    "permissions": [
+        "core:default",
+        "shell:allow-open",
+        "dialog:default",
+        "fs:default",
+        "fs:allow-watch",
+        "fs:allow-read-text-file",
+        "fs:allow-write-text-file",
+        "fs:allow-read-dir",
+        "fs:allow-mkdir",
+        "fs:allow-exists",
+        "shell:allow-execute",
+        {
+            "identifier": "fs:scope",
+            "allow": [
+                "$HOME/**",
+                "**",
+                "C:\\**",
+                "D:\\**",
+                "E:\\**",
+                "F:\\**"
+            ]
+        },
+        {
+            "identifier": "shell:allow-execute",
+            "allow": [
+                {
+                    "name": "git",
+                    "cmd": "git",
+                    "args": true
+                },
+                {
+                    "name": "npx",
+                    "cmd": "npx",
+                    "args": true
+                },
+                {
+                    "name": "npm",
+                    "cmd": "npm",
+                    "args": true
+                },
+                {
+                    "name": "node",
+                    "cmd": "node",
+                    "args": true
+                },
+                {
+                    "name": "cargo",
+                    "cmd": "cargo",
+                    "args": true
+                },
+                {
+                    "name": "python",
+                    "cmd": "python",
+                    "args": true
+                },
+                {
+                    "name": "pip",
+                    "cmd": "pip",
+                    "args": true
+                },
+                {
+                    "name": "ls",
+                    "cmd": "ls",
+                    "args": true
+                },
+                {
+                    "name": "echo",
+                    "cmd": "echo",
+                    "args": true
+                },
+                {
+                    "name": "mkdir",
+                    "cmd": "mkdir",
+                    "args": true
+                }
+            ]
+        }
+    ]
+}

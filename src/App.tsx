@@ -77,6 +77,25 @@ export default function App() {
     setToasts(prev => prev.filter(t => t.id !== id));
   };
 
+  // --- STARTUP HEALTH CHECK ---
+  useEffect(() => {
+    const verifySystem = async () => {
+      // 1. Check Git
+      try {
+        const version = await MockTauriService.executeShell('git', ['--version']);
+        console.log(`[Health] Git detected: ${version.trim()}`);
+        addToast('success', `System Ready: ${version.trim()}`);
+      } catch (e: any) {
+        // JSON stringify ensures we see the internal structure of the error object
+        console.error("[Health] Git check failed:", JSON.stringify(e, Object.getOwnPropertyNames(e)));
+        const msg = e.message || JSON.stringify(e);
+        addToast('error', `CRITICAL: Git not accessible. ${msg}`);
+      }
+    };
+    // Small delay to ensure backend is ready
+    setTimeout(verifySystem, 1000);
+  }, []);
+
   useEffect(() => {
     const checkGit = async () => {
       if (projectPath) {
@@ -100,16 +119,12 @@ export default function App() {
   }, []);
 
   const handleConfigUpdate = async (newConfig: Partial<MakerConfig>) => {
-    console.log("[App] Updating Config:", JSON.stringify(newConfig, null, 2)); // DEBUG LOG
+    console.log("[App] Updating Config:", JSON.stringify(newConfig, null, 2));
     setConfig(prev => {
       const next = { ...prev, ...newConfig };
-
-      // Ensure Engine gets the update immediately
       if (engineRef.current) {
-        console.log("[App] Pushing config to Engine...");
         engineRef.current.updateConfig(next);
       }
-
       if (projectPath) {
         ProjectService.saveConfig(projectPath, next)
           .catch(err => console.error("Failed to auto-save config", err));
@@ -144,9 +159,7 @@ export default function App() {
     addToast('info', 'Analyzing task requirements...');
 
     try {
-      // Force update config before start to ensure key is fresh
       engineRef.current.updateConfig(config);
-
       await engineRef.current.startTask(prompt);
       addToast('success', 'Plan generated. Please review.');
     } catch (error: any) {
@@ -323,7 +336,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Bottom Panel: Terminal & Agent Logs */}
+        {/* Bottom Panel */}
         <div className="h-64 border-t border-gray-800 bg-gray-900 flex flex-col">
           <div className="flex items-center h-8 bg-gray-900 border-b border-gray-800 px-2 gap-2">
             <button

@@ -11,6 +11,7 @@
     "app": {
         "windows": [
             {
+                "label": "main",
                 "title": "MakerCode",
                 "width": 1200,
                 "height": 800,
@@ -19,7 +20,10 @@
             }
         ],
         "security": {
-            "csp": null
+            "csp": null,
+            "capabilities": [
+                "default"
+            ]
         }
     },
     "bundle": {

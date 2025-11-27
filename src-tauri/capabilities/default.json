@@ -9,6 +9,12 @@
     "shell:allow-open",
     "dialog:default",
     "fs:default",
+    "fs:allow-watch",
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file",
+    "fs:allow-read-dir",
+    "fs:allow-mkdir",
+    "fs:allow-exists",
     {
       "identifier": "fs:scope",
       "allow": [
@@ -16,57 +22,10 @@
         "**",
         "C:\\**",
         "D:\\**",
-        "E:\\**"
-      ]
-    },
-    {
-      "identifier": "fs:allow-read-text-file",
-      "allow": [
-        "$HOME/**",
-        "**",
-        "C:\\**",
-        "D:\\**",
-        "E:\\**"
-      ]
-    },
-    {
-      "identifier": "fs:allow-write-text-file",
-      "allow": [
-        "$HOME/**",
-        "**",
-        "C:\\**",
-        "D:\\**",
-        "E:\\**"
-      ]
-    },
-    {
-      "identifier": "fs:allow-read-dir",
-      "allow": [
-        "$HOME/**",
-        "**",
-        "C:\\**",
-        "D:\\**",
-        "E:\\**"
-      ]
-    },
-    {
-      "identifier": "fs:allow-mkdir",
-      "allow": [
-        "$HOME/**",
-        "**",
-        "C:\\**",
-        "D:\\**",
-        "E:\\**"
-      ]
-    },
-    {
-      "identifier": "fs:allow-watch",
-      "allow": [
-        "$HOME/**",
-        "**",
-        "C:\\**",
-        "D:\\**",
-        "E:\\**"
+        "E:\\**",
+        "F:\\**",
+        "/Users/**",
+        "/home/**"
       ]
     },
     {
@@ -85,6 +44,106 @@
         {
           "name": "npm",
           "cmd": "npm",
+          "args": true
+        },
+        {
+          "name": "node",
+          "cmd": "node",
+          "args": true
+        },
+        {
+          "name": "cargo",
+          "cmd": "cargo",
+          "args": true
+        },
+        {
+          "name": "python",
+          "cmd": "python",
+          "args": true
+        },
+        {
+          "name": "python3",
+          "cmd": "python3",
+          "args": true
+        },
+        {
+          "name": "pip",
+          "cmd": "pip",
+          "args": true
+        },
+        {
+          "name": "ls",
+          "cmd": "ls",
+          "args": true
+        },
+        {
+          "name": "echo",
+          "cmd": "echo",
+          "args": true
+        },
+        {
+          "name": "mkdir",
+          "cmd": "mkdir",
+          "args": true
+        }
+      ]
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "git",
+          "cmd": "git",
+          "args": true
+        },
+        {
+          "name": "npx",
+          "cmd": "npx",
+          "args": true
+        },
+        {
+          "name": "npm",
+          "cmd": "npm",
+          "args": true
+        },
+        {
+          "name": "node",
+          "cmd": "node",
+          "args": true
+        },
+        {
+          "name": "cargo",
+          "cmd": "cargo",
+          "args": true
+        },
+        {
+          "name": "python",
+          "cmd": "python",
+          "args": true
+        },
+        {
+          "name": "python3",
+          "cmd": "python3",
+          "args": true
+        },
+        {
+          "name": "pip",
+          "cmd": "pip",
+          "args": true
+        },
+        {
+          "name": "ls",
+          "cmd": "ls",
+          "args": true
+        },
+        {
+          "name": "echo",
+          "cmd": "echo",
+          "args": true
+        },
+        {
+          "name": "mkdir",
+          "cmd": "mkdir",
           "args": true
         }
       ]
