@@ -1,16 +1,23 @@
 import React, { useState, useEffect } from 'react';
-import { GitCommit, GitBranch, AlertTriangle, Layers, RefreshCw, Cloud, ArrowUp, ArrowDown, Check, Loader2 } from 'lucide-react';
+import { GitCommit, GitBranch, AlertTriangle, Layers, RefreshCw, Cloud, ArrowUp, ArrowDown, Check, Loader2, Save } from 'lucide-react';
 import { GitHistory } from './GitHistory';
 import { MergeConflictResolver } from './MergeConflictResolver';
 import { GitService, GitStatus } from '../services/gitService';
 import { Worktree, MergeConflict } from '../types';
 
-export const VersionControl: React.FC = () => {
+interface VersionControlProps {
+    addToast?: (type: 'success' | 'error' | 'info', message: string) => void;
+}
+
+export const VersionControl: React.FC<VersionControlProps> = ({ addToast }) => {
     const [view, setView] = useState<'timeline' | 'worktrees' | 'conflicts'>('timeline');
     const [worktrees, setWorktrees] = useState<Worktree[]>([]);
     const [conflicts, setConflicts] = useState<MergeConflict[]>([]);
     const [status, setStatus] = useState<GitStatus | null>(null);
     const [isSyncing, setIsSyncing] = useState(false);
+
+    const [commitMsg, setCommitMsg] = useState('');
+    const [isCommitting, setIsCommitting] = useState(false);
 
     const loadData = async () => {
         const git = GitService.getInstance();
@@ -35,11 +42,28 @@ export const VersionControl: React.FC = () => {
         try {
             await GitService.getInstance().syncRemote();
             await loadData();
-        } catch (e) {
+            addToast?.('success', 'Sync completed successfully.');
+        } catch (e: any) {
             console.error("Sync failed", e);
-            alert("Sync Failed. Check console for details.");
+            addToast?.('error', `Sync Failed: ${e.message}`);
         } finally {
             setIsSyncing(false);
+        }
+    };
+
+    const handleCommit = async () => {
+        if (!commitMsg.trim()) return;
+        setIsCommitting(true);
+        try {
+            await GitService.getInstance().commitAll(commitMsg);
+            setCommitMsg('');
+            await loadData();
+            addToast?.('success', 'Changes committed.');
+        } catch (e: any) {
+            console.error("Commit failed", e);
+            addToast?.('error', `Commit Failed: ${e.message}`);
+        } finally {
+            setIsCommitting(false);
         }
     };
 
@@ -47,6 +71,7 @@ export const VersionControl: React.FC = () => {
         const git = GitService.getInstance();
         await git.resolveConflict(id, content);
         setConflicts(prev => prev.filter(c => c.id !== id));
+        addToast?.('success', 'Conflict resolved.');
     };
 
     return (
@@ -89,6 +114,27 @@ export const VersionControl: React.FC = () => {
                     )}
                 </div>
             </div>
+
+            {/* Dirty State Commit Box */}
+            {status?.isDirty && (
+                <div className="p-3 bg-yellow-900/10 border-b border-yellow-500/20 flex gap-2 items-center animate-in slide-in-from-top">
+                    <input
+                        value={commitMsg}
+                        onChange={(e) => setCommitMsg(e.target.value)}
+                        placeholder="Describe your changes..."
+                        className="flex-1 bg-gray-900 border border-gray-700 rounded-sm px-3 py-1.5 text-xs text-white focus:border-yellow-500 outline-hidden"
+                        onKeyDown={(e) => e.key === 'Enter' && handleCommit()}
+                    />
+                    <button
+                        onClick={handleCommit}
+                        disabled={isCommitting || !commitMsg.trim()}
+                        className="bg-yellow-600 hover:bg-yellow-500 text-white px-4 py-1.5 rounded-sm text-xs font-medium flex items-center gap-2 disabled:opacity-50"
+                    >
+                        {isCommitting ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                        Commit
+                    </button>
+                </div>
+            )}
 
             {/* Sub-Navigation */}
             <div className="h-10 border-b border-gray-800 flex items-center px-4 gap-6 bg-gray-900/50">

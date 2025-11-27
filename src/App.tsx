@@ -14,7 +14,8 @@ import {
   CheckCircle,
   Edit2,
   AlertTriangle,
-  FileText
+  FileText,
+  Save
 } from 'lucide-react';
 import { MakerVisualizer } from './components/MakerVisualizer';
 import { TerminalView } from './components/TerminalView';
@@ -44,6 +45,7 @@ export default function App() {
   const [activeFile, setActiveFile] = useState<string | null>(null);
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState(false);
+  const [isQuickSaving, setIsQuickSaving] = useState(false);
 
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
@@ -80,19 +82,16 @@ export default function App() {
   // --- STARTUP HEALTH CHECK ---
   useEffect(() => {
     const verifySystem = async () => {
-      // 1. Check Git
       try {
         const version = await MockTauriService.executeShell('git', ['--version']);
         console.log(`[Health] Git detected: ${version.trim()}`);
         addToast('success', `System Ready: ${version.trim()}`);
       } catch (e: any) {
-        // JSON stringify ensures we see the internal structure of the error object
         console.error("[Health] Git check failed:", JSON.stringify(e, Object.getOwnPropertyNames(e)));
         const msg = e.message || JSON.stringify(e);
         addToast('error', `CRITICAL: Git not accessible. ${msg}`);
       }
     };
-    // Small delay to ensure backend is ready
     setTimeout(verifySystem, 1000);
   }, []);
 
@@ -131,6 +130,19 @@ export default function App() {
       }
       return next;
     });
+  };
+
+  const handleQuickSave = async () => {
+    setIsQuickSaving(true);
+    try {
+      await GitService.getInstance().commitAll("WIP: Quick Save before Maker Task");
+      addToast('success', 'Changes saved successfully.');
+      setIsDirty(false); // Optimistic update
+    } catch (e: any) {
+      addToast('error', `Quick Save Failed: ${e.message}`);
+    } finally {
+      setIsQuickSaving(false);
+    }
   };
 
   const handleStartMaker = useCallback(async () => {
@@ -293,7 +305,7 @@ export default function App() {
         {/* Dynamic Content */}
         <div className="flex-1 overflow-hidden relative bg-gray-950 flex flex-col">
           {activeTab === 'visualizer' && <div className="flex-1 relative overflow-hidden"><MakerVisualizer state={makerState} config={config} /></div>}
-          {activeTab === 'git' && <VersionControl />}
+          {activeTab === 'git' && <VersionControl addToast={addToast} />}
           {activeTab === 'editor' && <CodeEditor activeFile={activeFile} />}
           {activeTab === 'agents' && <div className="flex-1 p-8 overflow-y-auto"><div className="max-w-4xl mx-auto"><AgentManager activeWorkers={makerState?.activeWorkers || 0} maxParallelism={config.maxParallelism} activeTasks={makerState ? makerState.decomposition.filter(t => t.status === AgentStatus.EXECUTING) : []} agentProfiles={config.agentProfiles} onConfigUpdate={handleConfigUpdate} /></div></div>}
 
@@ -307,9 +319,21 @@ export default function App() {
                   disabled={isDirty}
                   className={`w-full bg-gray-950 border rounded-lg p-3 text-sm focus:ring-1 outline-hidden resize-none h-24 font-mono transition-colors ${isDirty ? 'border-yellow-900/50 text-gray-500 cursor-not-allowed' : 'border-gray-700 text-gray-300 focus:border-indigo-500 focus:ring-indigo-500'}`}
                 />
-                <div className="absolute bottom-3 right-3 text-xs text-gray-600 flex items-center gap-2">
-                  {isDirty && <span className="text-yellow-500 flex items-center gap-1"><AlertTriangle size={12} /> Dirty State</span>}
-                  <span>MAKER Framework Enabled</span>
+                <div className="absolute bottom-3 right-3 text-xs flex items-center gap-2">
+                  {isDirty && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-yellow-500 flex items-center gap-1 font-bold"><AlertTriangle size={12} /> Unsaved Changes</span>
+                      <button
+                        onClick={handleQuickSave}
+                        disabled={isQuickSaving}
+                        className="flex items-center gap-1 bg-yellow-600 hover:bg-yellow-500 text-white px-2 py-1 rounded-sm text-[10px] font-bold uppercase transition-colors"
+                      >
+                        {isQuickSaving ? <Activity size={10} className="animate-spin" /> : <Save size={10} />}
+                        Quick Save
+                      </button>
+                    </div>
+                  )}
+                  <span className="text-gray-600">MAKER Framework Enabled</span>
                 </div>
               </div>
               <div className="flex flex-col gap-2 justify-between relative">

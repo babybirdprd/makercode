@@ -13,7 +13,6 @@ export interface GitStatus {
 export class GitService {
     private static instance: GitService;
 
-    // Singleton pattern to ensure we don't have multiple services fighting over git lock
     public static getInstance(): GitService {
         if (!GitService.instance) {
             GitService.instance = new GitService();
@@ -21,40 +20,28 @@ export class GitService {
         return GitService.instance;
     }
 
-    /**
-     * HEALTH & STATUS
-     * Acts as the "Internal Client" heartbeat.
-     */
     async getStatus(): Promise<GitStatus> {
         try {
-            // 1. Check if Repo
             try {
                 await MockTauriService.executeShell('git', ['rev-parse', '--is-inside-work-tree']);
             } catch {
                 return { isRepo: false, currentBranch: '', isDirty: false, hasRemote: false, behind: 0, ahead: 0 };
             }
 
-            // 2. Get Branch
             const branch = (await MockTauriService.executeShell('git', ['branch', '--show-current'])).trim();
-
-            // 3. Check Dirty State (Modified files not committed)
-            // --porcelain returns empty string if clean
             const statusOutput = await MockTauriService.executeShell('git', ['status', '--porcelain']);
             const isDirty = statusOutput.trim().length > 0;
 
-            // 4. Check Remote
             let hasRemote = false;
             try {
                 const remote = await MockTauriService.executeShell('git', ['remote']);
                 hasRemote = remote.trim().length > 0;
             } catch { }
 
-            // 5. Check Ahead/Behind (if remote exists)
             let ahead = 0;
             let behind = 0;
             if (hasRemote) {
                 try {
-                    // Ensure we have latest info without modifying working tree
                     await MockTauriService.executeShell('git', ['fetch', '--dry-run']);
                     const count = await MockTauriService.executeShell('git', ['rev-list', '--left-right', '--count', `${branch}...origin/${branch}`]);
                     const parts = count.trim().split(/\s+/);
@@ -75,8 +62,9 @@ export class GitService {
     async initRepo(): Promise<boolean> {
         try {
             await MockTauriService.executeShell('git', ['init']);
+            await this.ensureGitIgnore(); // Ensure we don't track garbage
             await MockTauriService.executeShell('git', ['branch', '-M', 'main']);
-            // Create initial empty commit so we have a HEAD
+            await MockTauriService.executeShell('git', ['add', '.']);
             await MockTauriService.executeShell('git', ['commit', '--allow-empty', '-m', 'Initial commit by MakerCode']);
             return true;
         } catch (e) {
@@ -85,28 +73,51 @@ export class GitService {
         }
     }
 
-    /**
-     * EXTERNAL INTEGRATION
-     * Syncs the Internal Client with the External Source of Truth (GitHub/GitLab)
-     */
+    async ensureGitIgnore() {
+        // Basic ignore list for MakerCode projects
+        const ignoreContent = `
+node_modules
+dist
+src-tauri/target
+.maker/worktrees
+.DS_Store
+.env
+        `.trim();
+
+        // Check if exists, if not write it
+        try {
+            await MockTauriService.readFile('.gitignore');
+        } catch {
+            console.log("[Git] Creating default .gitignore");
+            await MockTauriService.writeFile('.gitignore', ignoreContent);
+        }
+    }
+
+    async commitAll(message: string): Promise<void> {
+        try {
+            // Ensure ignore file exists to prevent adding 'target' folder issues
+            await this.ensureGitIgnore();
+
+            // Use -A (all) instead of . to handle deletions/moves better and usually avoids the ignore warning
+            await MockTauriService.executeShell('git', ['add', '-A']);
+            await MockTauriService.executeShell('git', ['commit', '-m', message]);
+        } catch (e: any) {
+            // Fallback: If add -A failed, try adding just the current directory non-recursively or handle the error
+            console.error("Commit failed", e);
+            throw new Error(`Commit failed: ${e.message || e}`);
+        }
+    }
+
     async syncRemote(): Promise<string> {
         try {
-            // 1. Pull Rebase (Keep history linear)
             const pullRes = await MockTauriService.executeShell('git', ['pull', '--rebase']);
-
-            // 2. Push
             const pushRes = await MockTauriService.executeShell('git', ['push']);
-
             return `Sync Complete.\n${pullRes}\n${pushRes}`;
         } catch (e: any) {
             throw new Error(`Sync failed: ${e.message || e}`);
         }
     }
 
-    /**
-     * WORKTREE MANAGEMENT (ISOLATION)
-     * Creates an isolated environment for a specific agent to work in.
-     */
     async createWorktree(taskId: string, stepId: string): Promise<{ branch: string, path: string }> {
         const branchName = `maker/${taskId}/step-${stepId}`;
         const worktreeRelPath = `.maker/worktrees/${stepId}`;
@@ -114,16 +125,12 @@ export class GitService {
         console.log(`[Git] Creating worktree for ${branchName}`);
 
         try {
-            // 1. Create branch based on HEAD
-            // Check if branch exists first
             try {
                 await MockTauriService.executeShell('git', ['rev-parse', '--verify', branchName]);
             } catch {
                 await MockTauriService.executeShell('git', ['branch', branchName, 'HEAD']);
             }
 
-            // 2. Add Worktree
-            // We use --force because sometimes the index lock lingers in these rapid AI environments
             await MockTauriService.executeShell('git', ['worktree', 'add', '--force', worktreeRelPath, branchName]);
 
             return { branch: branchName, path: worktreeRelPath };
@@ -136,11 +143,7 @@ export class GitService {
     async cleanupWorktree(path: string, branchName: string) {
         console.log(`[Git] Cleaning up worktree ${path}`);
         try {
-            // Remove worktree folder via git command
             await MockTauriService.executeShell('git', ['worktree', 'remove', path, '--force']);
-
-            // Delete branch (assuming merged)
-            // We use -D to force delete even if not fully merged (agent failure scenario)
             await MockTauriService.executeShell('git', ['branch', '-D', branchName]);
         } catch (e) {
             console.warn(`Failed to cleanup worktree ${path}:`, e);
@@ -180,13 +183,8 @@ export class GitService {
         }
     }
 
-    /**
-     * CHECKPOINT SYSTEM
-     * Commits the changes to the main history.
-     */
     async createCheckpoint(message: string, files: string[] = ['.']) {
         console.log(`[Git] Checkpointing: ${message}`);
-        // Add specific files or all
         await MockTauriService.executeShell('git', ['add', ...files]);
         await MockTauriService.executeShell('git', ['commit', '-m', `MAKER: ${message}`]);
     }
@@ -194,7 +192,6 @@ export class GitService {
     async mergeWorktreeToMain(branchName: string, message: string): Promise<boolean> {
         console.log(`[Git] Merging ${branchName} into main...`);
         try {
-            // Merge squash to keep history clean
             await MockTauriService.executeShell('git', ['merge', '--squash', branchName]);
             await MockTauriService.executeShell('git', ['commit', '-m', `MAKER Merge: ${message}`]);
             return true;
@@ -202,15 +199,12 @@ export class GitService {
             console.error("Merge failed (likely conflict):", e);
             const status = await MockTauriService.executeShell('git', ['status']);
             if (status.includes('Unmerged paths')) {
-                return false; // Real conflict
+                return false;
             }
             throw e;
         }
     }
 
-    /**
-     * CONFLICT MANAGEMENT
-     */
     async getConflicts(): Promise<MergeConflict[]> {
         try {
             const output = await MockTauriService.executeShell('git', ['diff', '--name-only', '--diff-filter=U']);
@@ -221,13 +215,11 @@ export class GitService {
             const conflicts: MergeConflict[] = [];
 
             for (const filePath of files) {
-                // Get HEAD version
                 let contentA = "";
                 try {
                     contentA = await MockTauriService.executeShell('git', ['show', `:2:${filePath}`]);
                 } catch { contentA = "(Deleted in HEAD)"; }
 
-                // Get Incoming version
                 let contentB = "";
                 try {
                     contentB = await MockTauriService.executeShell('git', ['show', `:3:${filePath}`]);
