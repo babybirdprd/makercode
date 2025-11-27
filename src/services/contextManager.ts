@@ -33,7 +33,20 @@ export class ContextManager {
     async getArchitectContext(userPrompt: string, tools: ToolDefinition[]): Promise<ProjectContext> {
         const fileTree = await this.generateFileTree();
         const manifests = await this.getManifests();
+
+        // 1. Scout based on keywords
         const scoutedFiles = await this.scoutFiles(userPrompt);
+
+        // 2. Auto-Scout Entry Points (Fix for "Blind Architect")
+        const entryPoints = await this.scoutEntryPoints();
+
+        // Merge and deduplicate
+        const allScouted = [...scoutedFiles];
+        for (const ep of entryPoints) {
+            if (!allScouted.some(s => s.path === ep.path)) {
+                allScouted.push(ep);
+            }
+        }
 
         // Deep Analysis of Project Identity
         const identity = await this.analyzeProjectIdentity();
@@ -41,7 +54,7 @@ export class ContextManager {
         return {
             fileTree,
             manifests,
-            scoutedFiles,
+            scoutedFiles: allScouted,
             primaryLanguage: identity.primaryLanguage,
             packageManager: identity.packageManager,
             forbiddenKeywords: identity.forbiddenKeywords,
@@ -50,7 +63,7 @@ export class ContextManager {
         };
     }
 
-    async getTaskContext(fileTarget: string, dependencies: string[]): Promise<string> {
+    async getTaskContext(fileTarget: string, dependencies: string[], previousSteps: any[] = []): Promise<string> {
         let context = "";
 
         const targetContent = await this.vfs.readFile(fileTarget);
@@ -58,10 +71,21 @@ export class ContextManager {
             context += `\n--- CURRENT CONTENT: ${fileTarget} ---\n${targetContent}\n`;
         }
 
-        for (const depPath of dependencies) {
-            const content = await this.vfs.readFile(depPath);
-            if (content) {
-                context += `\n--- REFERENCE: ${depPath} ---\n${content}\n`;
+        for (const depId of dependencies) {
+            // Check if this dependency is a previous step
+            const step = previousSteps.find(s => s.id === depId);
+
+            if (step && step.toolCall && step.logs && step.logs.length > 0) {
+                // If the previous step was a tool call (like read_file), include its output
+                context += `\n--- OUTPUT FROM STEP '${step.description}' ---\n${step.logs.join('\n').substring(0, 5000)}\n`; // Limit context size
+            } else {
+                // Fallback: try to read it as a file path
+                if (depId.includes('.') || depId.includes('/')) {
+                    const content = await this.vfs.readFile(depId);
+                    if (content) {
+                        context += `\n--- REFERENCE: ${depId} ---\n${content}\n`;
+                    }
+                }
             }
         }
 
@@ -96,12 +120,10 @@ export class ContextManager {
         const tree = await this.vfs.getDirectoryTree();
         const files = this.flattenTree(tree);
 
-        // 1. Check Anchors (Strongest Signal)
         const hasPackageJson = files.some(f => f.endsWith('package.json'));
         const hasRequirements = files.some(f => f.endsWith('requirements.txt') || f.endsWith('Pipfile') || f.endsWith('pyproject.toml'));
         const hasCargo = files.some(f => f.endsWith('Cargo.toml'));
 
-        // 2. Check Extension Density (Heuristic Signal)
         let pyCount = 0, tsCount = 0, rsCount = 0;
         files.forEach(f => {
             if (f.endsWith('.py')) pyCount++;
@@ -109,13 +131,11 @@ export class ContextManager {
             if (f.endsWith('.rs')) rsCount++;
         });
 
-        // 3. Determine Identity
         let language = "Generic";
         let pkgMgr = "None";
         let forbidden: string[] = [];
         let frameworks: string[] = [];
 
-        // Priority 1: Manifests
         if (hasPackageJson) {
             language = "TypeScript/Node";
             pkgMgr = "npm/yarn";
@@ -128,9 +148,7 @@ export class ContextManager {
             language = "Rust";
             pkgMgr = "cargo";
             forbidden = ["npm", "pip", "node_modules"];
-        }
-        // Priority 2: Heuristics (The fix for your use case)
-        else {
+        } else {
             if (pyCount > tsCount && pyCount > rsCount) {
                 language = "Python";
                 pkgMgr = "pip (assumed)";
@@ -198,6 +216,33 @@ export class ContextManager {
                 const content = await this.vfs.readFile(file);
                 if (content) results.push({ path: file, content: content.substring(0, 1000) + "..." });
             }
+        }
+        return results;
+    }
+
+    // New: Heuristic to find "Main" files
+    private async scoutEntryPoints(): Promise<{ path: string, content: string }[]> {
+        const entryNames = [
+            'main.py', 'app.py', 'index.py', 'manage.py', // Python
+            'index.ts', 'index.js', 'app.tsx', 'main.tsx', 'server.ts', // JS/TS
+            'main.rs', 'lib.rs', // Rust
+            'go.mod', 'Makefile' // Misc
+        ];
+
+        const tree = await this.vfs.getDirectoryTree();
+        const files = this.flattenTree(tree);
+        const results: { path: string, content: string }[] = [];
+
+        for (const file of files) {
+            const fileName = file.split('/').pop() || "";
+            if (entryNames.includes(fileName)) {
+                const content = await this.vfs.readFile(file);
+                if (content) {
+                    // Limit content size to avoid blowing up context
+                    results.push({ path: file, content: content.substring(0, 2000) + (content.length > 2000 ? "\n...(truncated)" : "") });
+                }
+            }
+            if (results.length >= 3) break; // Limit to top 3 entry points
         }
         return results;
     }

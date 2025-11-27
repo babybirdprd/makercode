@@ -246,22 +246,26 @@ export class MakerEngine {
 
                 const cwd = worktreeInfo ? worktreeInfo.path : vfs.getRoot() || ".";
 
-                // FIX: Do not write tool output if target is a directory or root
+                // FIX: Do not write tool output to file if it's a read-only tool
+                const isReadOnly = ['read_file', 'ls', 'grep'].includes(toolDef.name);
                 const isDirectory = step.fileTarget.endsWith('/') || step.fileTarget === '.' || step.fileTarget === './';
-                const outputFile = !isDirectory && step.fileTarget ? step.fileTarget : undefined;
+                const outputFile = !isReadOnly && !isDirectory && step.fileTarget ? step.fileTarget : undefined;
 
                 const output = await this.toolService.executeTool(toolDef, step.toolCall, cwd, outputFile);
 
+                // STORE OUTPUT IN LOGS SO DEPENDENT STEPS CAN SEE IT
                 this.updateStepStatus(index, AgentStatus.PASSED, {
-                    logs: [`Tool Executed: ${output.substring(0, 200)}...`]
+                    logs: [output]
                 });
                 this.state.completedSteps++;
 
                 if (this.config.useGitWorktrees && worktreeInfo) {
-                    // Only checkpoint if we actually wrote a file
+                    // FIX: Only checkpoint if we actually wrote a file (outputFile is defined)
                     if (outputFile) {
                         await this.git.createCheckpoint(step.description, ['.'], worktreeInfo.path);
                         await this.git.mergeWorktreeToMain(worktreeInfo.branch, `Executed Tool: ${step.description}`);
+                    } else {
+                        console.log(`[MakerEngine] Read-only tool executed. Skipping merge.`);
                     }
                     await this.git.cleanupWorktree(worktreeInfo.path, worktreeInfo.branch);
                 }
@@ -274,9 +278,10 @@ export class MakerEngine {
 
             const dependencyFiles = this.state.decomposition
                 .filter(s => step.dependencies.includes(s.id))
-                .map(s => s.fileTarget);
+                .map(s => s.id); // Pass IDs to lookup logs
 
-            let context = await this.contextManager.getTaskContext(step.fileTarget, dependencyFiles);
+            // Pass full decomposition for log lookup
+            let context = await this.contextManager.getTaskContext(step.fileTarget, dependencyFiles, this.state.decomposition);
             const fullContext = await this.contextManager.getArchitectContext(step.description, []);
 
             const shouldVote = riskAssessment.score > Math.min(this.config.riskThreshold, agent.riskTolerance + 0.3);
@@ -307,22 +312,41 @@ export class MakerEngine {
                 traceData = genResult.trace;
             }
 
-            // RED FLAG CHECK
-            const redFlags: string[] = [];
-            if (fullContext.primaryLanguage === 'python' && content.includes('npm install')) {
-                redFlags.push("Hallucination: npm in Python project");
-            }
-            if (fullContext.primaryLanguage === 'rust' && content.includes('pip install')) {
-                redFlags.push("Hallucination: pip in Rust project");
-            }
-            if (content.length > 50000) {
-                redFlags.push("Output too large (>50k chars)");
-            }
+            // --- RED FLAG SELF-CORRECTION LOOP ---
+            let redFlagAttempts = 0;
+            const maxRedFlagRetries = 2;
+            let currentRedFlags: string[] = [];
 
-            if (redFlags.length > 0) {
-                if (traceData) traceData.redFlags = redFlags;
-                throw new Error(`Red Flags Detected: ${redFlags.join(', ')}`);
-            }
+            do {
+                currentRedFlags = [];
+                if (fullContext.primaryLanguage === 'python' && content.includes('npm install')) {
+                    currentRedFlags.push("Hallucination: Detected 'npm install' in a Python project. Use pip or poetry.");
+                }
+                if (fullContext.primaryLanguage === 'rust' && content.includes('pip install')) {
+                    currentRedFlags.push("Hallucination: Detected 'pip install' in a Rust project. Use cargo.");
+                }
+                if (content.length > 50000) {
+                    currentRedFlags.push("Output too large (>50k chars). Summarize or split.");
+                }
+
+                if (currentRedFlags.length > 0) {
+                    if (redFlagAttempts < maxRedFlagRetries) {
+                        const feedback = `CRITICAL SYSTEM WARNING - RED FLAGS DETECTED:\n${currentRedFlags.join('\n')}\n\nFIX THESE ISSUES IMMEDIATELY.`;
+
+                        this.updateStepStatus(index, AgentStatus.THINKING, {
+                            logs: [...(this.state.decomposition[index].logs || []), `[Self-Correction] Red Flags: ${currentRedFlags.join(', ')}. Retrying (${redFlagAttempts + 1}/${maxRedFlagRetries})...`]
+                        });
+
+                        const retryResult = await this.generateCode(step, agent, context, fullContext, feedback);
+                        content = retryResult.content;
+                        traceData = retryResult.trace;
+                        redFlagAttempts++;
+                    } else {
+                        if (traceData) traceData.redFlags = currentRedFlags;
+                        throw new Error(`Red Flags Persisted after retries: ${currentRedFlags.join(', ')}`);
+                    }
+                }
+            } while (currentRedFlags.length > 0 && redFlagAttempts <= maxRedFlagRetries);
 
             this.updateStepStatus(index, AgentStatus.EXECUTING, { trace: traceData });
             const targetPath = worktreeInfo ? `${worktreeInfo.path}/${step.fileTarget}` : step.fileTarget;
@@ -332,6 +356,7 @@ export class MakerEngine {
 
             await MockTauriService.writeFile(targetPath, content);
 
+            // --- LINTER LOOP ---
             const provider = this.langRegistry.getProvider(targetPath);
             let lintAttempts = 0;
             const maxLintAttempts = this.config.autoFixLinter ? 2 : 0;
@@ -444,7 +469,7 @@ export class MakerEngine {
                 TARGET FILE: ${step.fileTarget}
                 --- RELEVANT CODEBASE CONTEXT ---
                 ${context}
-                ${feedback ? `--- PREVIOUS ERRORS (FIX THESE) ---\n${feedback}` : ''}
+                ${feedback ? `--- FEEDBACK FROM PREVIOUS ATTEMPT (MUST FIX) ---\n${feedback}` : ''}
             `;
 
             const response = await this.llm.generate(systemPrompt, userPrompt);

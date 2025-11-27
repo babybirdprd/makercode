@@ -21,17 +21,18 @@ ${context.fileTree}
 Manifests:
 ${context.manifests || "(No manifest files found)"}
 
-Relevant Files:
+Relevant Files (Auto-Scouted):
 ${context.scoutedFiles.map(f => `Path: ${f.path}\nContent Snippet:\n${f.content}`).join('\n\n') || "(None)"}
 
 Available Tools:
 ${context.tools.map(t => `- ${t.name}: ${t.description} (Usage: ${t.command})`).join('\n') || "No external tools available."}
 
 --- RULES ---
-1. **Context Awareness**: Do NOT hallucinate files. Only modify files that exist in the "Project Root Structure" unless the task is to create a new one.
-2. **Environment Strictness**: You are in a ${context.primaryLanguage} environment. Do not suggest commands from other ecosystems.
-3. **Atomicity**: Each step must be small and executable.
-4. **Tool Usage**: If a tool is relevant, create a step for it.
+1. **Information Gathering (CRITICAL)**: If you need to understand the codebase (e.g., "Write README", "Refactor", "Explain"), you MUST create steps to READ the relevant files using the \`read_file\` tool BEFORE creating steps to write code.
+   - Example: Step 1: "Read main.py and ai.py to understand project logic" (Tool: read_file). Step 2: "Write README.md".
+2. **Context Awareness**: Do NOT hallucinate files. Only modify files that exist in the "Project Root Structure" unless the task is to create a new one.
+3. **Environment Strictness**: You are in a ${context.primaryLanguage} environment. Do not suggest commands from other ecosystems.
+4. **Atomicity**: Each step must be small and executable.
 5. **Role Assignment**: Assign a "Micro-Role" (e.g. PythonDataEngineer, DocumentationSpecialist).
 
 --- OUTPUT SCHEMA ---
