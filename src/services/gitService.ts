@@ -51,17 +51,10 @@ export class GitService {
         if (!cwd) return false;
 
         try {
-            // Rustification: Use native git init via libgit2
             await MockTauriService.gitInit(cwd);
-
             await this.ensureGitIgnore();
-
-            // Rustification: Use native add all
             await MockTauriService.gitAddAll(cwd);
-
-            // Rustification: Use native commit
             await MockTauriService.gitCommit(cwd, 'Initial commit by MakerCode');
-
             return true;
         } catch (e) {
             console.error("Failed to init repo", e);
@@ -70,7 +63,6 @@ export class GitService {
     }
 
     async ensureGitIgnore() {
-        // Basic ignore list for MakerCode projects
         const ignoreContent = `
 node_modules
 dist
@@ -98,14 +90,10 @@ src-tauri/target
         try {
             if (!overrideCwd) await this.ensureGitIgnore();
 
-            // Rustification: If we are in the root (standard commit), use the fast Rust bindings
             if (!overrideCwd) {
                 await MockTauriService.gitAddAll(cwd);
                 await MockTauriService.gitCommit(cwd, message);
             } else {
-                // Fallback: Worktree operations might require shell if they are outside the main repo context contextually
-                // or if we haven't exposed worktree-specific logic in lib.rs yet.
-                // For now, keep shell for worktrees to be safe.
                 await MockTauriService.executeShell('git', ['add', '-A'], cwd);
                 await MockTauriService.executeShell('git', ['commit', '-m', message], cwd);
             }
@@ -142,7 +130,6 @@ src-tauri/target
 
             await MockTauriService.executeShell('git', ['worktree', 'add', '--force', worktreeRelPath, branchName], cwd);
 
-            // Return absolute path if we have a root, otherwise relative
             const fullPath = cwd ? `${cwd}/${worktreeRelPath}` : worktreeRelPath;
             return { branch: branchName, path: fullPath };
         } catch (error) {
@@ -196,20 +183,30 @@ src-tauri/target
         }
     }
 
-    async createCheckpoint(message: string, files: string[] = ['.'], overrideCwd?: string) {
+    async createCheckpoint(message: string, files: string[] = ['.'], overrideCwd?: string): Promise<boolean> {
         const cwd = overrideCwd || this.getRoot();
-        if (!cwd) return;
+        if (!cwd) return false;
 
         console.log(`[Git] Checkpointing in ${cwd}: ${message}`);
 
-        // Optimization: If we are checkpointing everything in the main root, use Rust
-        if (!overrideCwd && files.length === 1 && files[0] === '.') {
-            await MockTauriService.gitAddAll(cwd);
-            await MockTauriService.gitCommit(cwd, `MAKER: ${message}`);
-        } else {
-            // Specific files or worktrees still need shell
-            await MockTauriService.executeShell('git', ['add', ...files], cwd);
-            await MockTauriService.executeShell('git', ['commit', '-m', `MAKER: ${message}`], cwd);
+        try {
+            if (!overrideCwd && files.length === 1 && files[0] === '.') {
+                await MockTauriService.gitAddAll(cwd);
+                await MockTauriService.gitCommit(cwd, `MAKER: ${message}`);
+                return true;
+            } else {
+                await MockTauriService.executeShell('git', ['add', ...files], cwd);
+                await MockTauriService.executeShell('git', ['commit', '-m', `MAKER: ${message}`], cwd);
+                return true;
+            }
+        } catch (e: any) {
+            const msg = e.message || String(e);
+            // Ignore "nothing to commit" errors
+            if (msg.includes('nothing to commit') || msg.includes('clean')) {
+                console.log("[Git] Skipping checkpoint (Clean working tree)");
+                return false;
+            }
+            throw e;
         }
     }
 
@@ -218,10 +215,13 @@ src-tauri/target
         console.log(`[Git] Merging ${branchName} into main...`);
         try {
             await MockTauriService.executeShell('git', ['merge', '--squash', branchName], cwd);
-            // Rust commit for the merge commit
             if (cwd) await MockTauriService.gitCommit(cwd, `MAKER Merge: ${message}`);
             return true;
-        } catch (e) {
+        } catch (e: any) {
+            const msg = e.message || String(e);
+            // Catch "nothing to merge" scenario if branch was empty
+            if (msg.includes('Already up to date')) return true;
+
             console.error("Merge failed (likely conflict):", e);
             const status = await MockTauriService.executeShell('git', ['status'], cwd);
             if (status.includes('Unmerged paths')) {

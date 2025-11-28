@@ -246,8 +246,8 @@ export class MakerEngine {
 
                 const cwd = worktreeInfo ? worktreeInfo.path : vfs.getRoot() || ".";
 
-                // FIX: Do not write tool output to file if it's a read-only tool
-                const isReadOnly = ['read_file', 'ls', 'grep'].includes(toolDef.name);
+                // FIX: Explicitly ignore make_directory as a "writable" tool to prevent overwriting dirs with text
+                const isReadOnly = ['read_file', 'ls', 'grep', 'make_directory'].includes(toolDef.name);
                 const isDirectory = step.fileTarget.endsWith('/') || step.fileTarget === '.' || step.fileTarget === './';
                 const outputFile = !isReadOnly && !isDirectory && step.fileTarget ? step.fileTarget : undefined;
 
@@ -260,12 +260,12 @@ export class MakerEngine {
                 this.state.completedSteps++;
 
                 if (this.config.useGitWorktrees && worktreeInfo) {
-                    // FIX: Only checkpoint if we actually wrote a file (outputFile is defined)
-                    if (outputFile) {
-                        await this.git.createCheckpoint(step.description, ['.'], worktreeInfo.path);
+                    // Checkpoint logic
+                    const didCommit = await this.git.createCheckpoint(step.description, ['.'], worktreeInfo.path);
+                    if (didCommit) {
                         await this.git.mergeWorktreeToMain(worktreeInfo.branch, `Executed Tool: ${step.description}`);
                     } else {
-                        console.log(`[MakerEngine] Read-only tool executed. Skipping merge.`);
+                        console.log(`[MakerEngine] Nothing to commit for tool step. Skipping merge.`);
                     }
                     await this.git.cleanupWorktree(worktreeInfo.path, worktreeInfo.branch);
                 }
@@ -449,10 +449,12 @@ export class MakerEngine {
 
             this.updateStepStatus(index, AgentStatus.CHECKPOINTING);
             if (this.config.useGitWorktrees && worktreeInfo) {
-                await this.git.createCheckpoint(step.description, ['.'], worktreeInfo.path);
-                this.updateStepStatus(index, AgentStatus.MERGING);
-                const mergeSuccess = await this.git.mergeWorktreeToMain(worktreeInfo.branch, step.description);
-                if (!mergeSuccess) throw new Error("Merge Conflict.");
+                const didCommit = await this.git.createCheckpoint(step.description, ['.'], worktreeInfo.path);
+                if (didCommit) {
+                    this.updateStepStatus(index, AgentStatus.MERGING);
+                    const mergeSuccess = await this.git.mergeWorktreeToMain(worktreeInfo.branch, step.description);
+                    if (!mergeSuccess) throw new Error("Merge Conflict.");
+                }
                 await this.git.cleanupWorktree(worktreeInfo.path, worktreeInfo.branch);
             } else {
                 await this.git.createCheckpoint(step.description, [step.fileTarget]);
