@@ -13,11 +13,17 @@ export const StepDetailView: React.FC<StepDetailViewProps> = ({ step, onClose })
     const trace = step.trace;
 
     return (
-        <div className="absolute inset-0 z-50 flex items-center justify-end bg-black/50 backdrop-blur-xs">
-            <div className="w-[600px] h-full bg-gray-900 border-l border-gray-800 shadow-2xl flex flex-col animate-in slide-in-from-right duration-300">
+        // FIX: Changed absolute -> fixed to ensure visibility regardless of scroll
+        // Added z-50 to ensure it sits on top of everything
+        <div className="fixed inset-0 z-50 flex items-center justify-end bg-black/50 backdrop-blur-xs">
+            {/* Prevent closing when clicking content */}
+            <div
+                className="w-[600px] h-full bg-gray-900 border-l border-gray-800 shadow-2xl flex flex-col animate-in slide-in-from-right duration-300"
+                onClick={(e) => e.stopPropagation()}
+            >
 
                 {/* Header */}
-                <div className="h-14 border-b border-gray-800 flex items-center justify-between px-6 bg-gray-950">
+                <div className="h-14 border-b border-gray-800 flex items-center justify-between px-6 bg-gray-950 shrink-0">
                     <div>
                         <h2 className="text-sm font-bold text-gray-100 flex items-center gap-2">
                             <Cpu size={16} className="text-indigo-400" />
@@ -25,13 +31,13 @@ export const StepDetailView: React.FC<StepDetailViewProps> = ({ step, onClose })
                         </h2>
                         <p className="text-[10px] text-gray-500 font-mono">{step.id}</p>
                     </div>
-                    <button onClick={onClose} className="p-2 hover:bg-gray-800 rounded-full text-gray-400 hover:text-white">
+                    <button onClick={onClose} className="p-2 hover:bg-gray-800 rounded-full text-gray-400 hover:text-white transition-colors">
                         <X size={18} />
                     </button>
                 </div>
 
                 {/* Agent Info Banner */}
-                <div className="p-4 bg-indigo-900/10 border-b border-indigo-500/10">
+                <div className="p-4 bg-indigo-900/10 border-b border-indigo-500/10 shrink-0">
                     <div className="flex justify-between items-start mb-2">
                         <div>
                             <div className="text-xs font-bold text-indigo-300 mb-0.5">Assigned Agent</div>
@@ -48,7 +54,7 @@ export const StepDetailView: React.FC<StepDetailViewProps> = ({ step, onClose })
                 </div>
 
                 {/* Tabs */}
-                <div className="flex border-b border-gray-800 bg-gray-900">
+                <div className="flex border-b border-gray-800 bg-gray-900 shrink-0">
                     <button
                         onClick={() => setActiveTab('trace')}
                         className={`flex-1 py-3 text-xs font-medium flex items-center justify-center gap-2 ${activeTab === 'trace' ? 'text-indigo-400 border-b-2 border-indigo-500' : 'text-gray-500 hover:text-gray-300'}`}

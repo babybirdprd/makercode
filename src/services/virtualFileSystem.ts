@@ -27,21 +27,26 @@ export class VirtualFileSystem {
         this.projectRoot = path.replace(/\\/g, '/').replace(/\/$/, '');
         this.fileCache.clear();
 
+        // Cleanup previous watcher
         if (this.unwatchFn) {
             this.unwatchFn();
             this.unwatchFn = null;
         }
 
         try {
-            // Watch the normalized path
+            // Attempt to use native watcher (Requires 'watch' feature in Cargo.toml)
+            console.log(`[VFS] Starting native watcher on ${this.projectRoot}`);
             this.unwatchFn = await MockTauriService.watchPath(this.projectRoot, (event) => {
                 this.handleDiskChange(event);
             });
-            console.log(`[VFS] Watcher started on ${this.projectRoot}`);
-        } catch (e) {
-            console.warn("[VFS] Failed to start watcher. Manual refresh required.", e);
+            console.log(`[VFS] Watcher started successfully.`);
+        } catch (e: any) {
+            console.error("[VFS] Failed to start watcher.", e);
+            console.error("[VFS] CRITICAL: Ensure 'tauri-plugin-fs' has the 'watch' feature enabled in src-tauri/Cargo.toml");
+            // No polling fallback - we rely on the real solution.
         }
 
+        // Initial scan
         this.notify();
     }
 
@@ -53,6 +58,7 @@ export class VirtualFileSystem {
     }
 
     private handleDiskChange(event: any) {
+        // Debounce rapid events (like git checkout)
         if (this.debounceTimer) clearTimeout(this.debounceTimer);
         this.debounceTimer = setTimeout(() => {
             console.log("[VFS] Disk change detected:", event);
@@ -83,7 +89,7 @@ export class VirtualFileSystem {
             const fullPath = `${this.projectRoot}${cleanPath}`;
             await MockTauriService.writeFile(fullPath, content);
         }
-        this.notify();
+        // Notification handled by watcher, but optimistic update is fine
     }
 
     async readFile(path: string): Promise<string | null> {

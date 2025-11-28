@@ -70,6 +70,10 @@ export default function App() {
 
   const engineRef = useRef<MakerEngine | null>(null);
 
+  // FIX: Added refs for throttling logic to prevent UI jank
+  const pendingUpdateRef = useRef<TaskStatus | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+
   const addToast = (type: 'success' | 'error' | 'info', message: string) => {
     const id = Math.random().toString(36).substring(2);
     setToasts(prev => [...prev, { id, type, message }]);
@@ -106,16 +110,35 @@ export default function App() {
     return () => clearInterval(interval);
   }, [projectPath]);
 
+  // FIX: Throttled subscription to the MakerEngine
   useEffect(() => {
     engineRef.current = new MakerEngine();
+
     const unsubscribe = engineRef.current.subscribe((state) => {
-      setMakerState(state);
-      if (state.errorCount > (makerState?.errorCount || 0)) {
-        addToast('error', 'An error occurred during execution. Check logs.');
+      // Store latest state
+      pendingUpdateRef.current = state;
+
+      // Only schedule if not already scheduled
+      if (!animationFrameRef.current) {
+        animationFrameRef.current = requestAnimationFrame(() => {
+          if (pendingUpdateRef.current) {
+            setMakerState(pendingUpdateRef.current);
+
+            // Check for new errors
+            if (pendingUpdateRef.current.errorCount > (makerState?.errorCount || 0)) {
+              addToast('error', 'An error occurred during execution. Check logs.');
+            }
+          }
+          animationFrameRef.current = null;
+        });
       }
     });
-    return () => unsubscribe();
-  }, []);
+
+    return () => {
+      unsubscribe();
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    };
+  }, []); // Empty dependency array intended
 
   const handleConfigUpdate = async (newConfig: Partial<MakerConfig>) => {
     console.log("[App] Updating Config:", JSON.stringify(newConfig, null, 2));
