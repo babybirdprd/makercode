@@ -22,8 +22,6 @@ export class ToolService {
                 id: "sys_ls",
                 name: "ls",
                 description: "List files in the project (respects .gitignore)",
-                // We use git ls-files because it works cross-platform if git is installed, 
-                // and it filters out node_modules garbage automatically.
                 command: "git ls-files --full-name",
                 requiresApproval: false,
                 isSystem: true
@@ -32,8 +30,6 @@ export class ToolService {
                 id: "sys_read",
                 name: "read_file",
                 description: "Read the contents of a file",
-                // We use a custom 'read_file' pseudo-command that we intercept in executeTool
-                // This avoids 'cat' vs 'type' issues on Windows
                 command: "__INTERNAL_READ_FILE__ {{path}}",
                 requiresApproval: false,
                 isSystem: true
@@ -72,18 +68,30 @@ export class ToolService {
 
         // 2. Intercept Internal Commands
         if (commandStr.startsWith('__INTERNAL_READ_FILE__')) {
-            const filePath = commandStr.replace('__INTERNAL_READ_FILE__', '').trim();
-            // Resolve path relative to CWD
-            const fullPath = filePath.startsWith('/') || filePath.match(/^[a-zA-Z]:/) ? filePath : `${cwd}/${filePath}`;
+            let filePath = commandStr.replace('__INTERNAL_READ_FILE__', '').trim();
+
+            // FIX: Robust Path Resolution
+            // If it looks like a Windows absolute path (C:\...), keep it.
+            // If it starts with /, but we are in a project, treat it as relative to CWD.
+            const isWindowsAbsolute = /^[a-zA-Z]:/.test(filePath);
+
+            if (!isWindowsAbsolute) {
+                // Strip leading slash/dot-slash to make it clean relative
+                filePath = filePath.replace(/^[\/\\]/, '').replace(/^\.[\/\\]/, '');
+                // Join with CWD
+                filePath = `${cwd}/${filePath}`;
+            }
+
             try {
-                return await MockTauriService.readFile(fullPath);
+                return await MockTauriService.readFile(filePath);
             } catch (e: any) {
-                return `Error reading file: ${e.message}`;
+                // FIX: Better error logging
+                const msg = e.message || (typeof e === 'string' ? e : JSON.stringify(e));
+                return `Error reading file ${filePath}: ${msg}`;
             }
         }
 
         // 3. Parse Command
-        // This regex splits by spaces but respects quotes
         const parts = commandStr.match(/(?:[^\s"]+|"[^"]*")+/g)?.map(s => s.replace(/"/g, '')) || [];
         if (parts.length === 0) throw new Error("Tool command empty.");
 
@@ -97,14 +105,14 @@ export class ToolService {
             // 5. Output Redirection (Context Persistence)
             if (outputFile && outputFile !== 'stdout' && outputFile !== 'stderr') {
                 console.log(`[ToolService] Saving output to ${outputFile}`);
-                // Ensure path is absolute or relative to cwd
                 const targetPath = outputFile.startsWith('/') ? outputFile : `${cwd}/${outputFile}`;
                 await MockTauriService.writeFile(targetPath, output);
             }
 
             return output;
         } catch (e: any) {
-            throw new Error(`Tool execution failed: ${e.message}`);
+            const msg = e.message || String(e);
+            throw new Error(`Tool execution failed: ${msg}`);
         }
     }
 }

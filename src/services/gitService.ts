@@ -27,42 +27,25 @@ export class GitService {
 
     async getStatus(): Promise<GitStatus> {
         const cwd = this.getRoot();
-        try {
-            try {
-                await MockTauriService.executeShell('git', ['rev-parse', '--is-inside-work-tree'], cwd);
-            } catch {
-                return { isRepo: false, currentBranch: '', isDirty: false, hasRemote: false, behind: 0, ahead: 0 };
+
+        // REFACTORED: Use native Rust command instead of parsing shell stdout
+        // This is much faster and atomic
+        if (cwd) {
+            const nativeStatus = await MockTauriService.getGitStatus(cwd);
+            if (nativeStatus) {
+                return {
+                    isRepo: nativeStatus.is_repo,
+                    currentBranch: nativeStatus.current_branch,
+                    isDirty: nativeStatus.is_dirty,
+                    hasRemote: nativeStatus.has_remote,
+                    behind: nativeStatus.behind,
+                    ahead: nativeStatus.ahead
+                };
             }
-
-            const branch = (await MockTauriService.executeShell('git', ['branch', '--show-current'], cwd)).trim();
-            const statusOutput = await MockTauriService.executeShell('git', ['status', '--porcelain'], cwd);
-            const isDirty = statusOutput.trim().length > 0;
-
-            let hasRemote = false;
-            try {
-                const remote = await MockTauriService.executeShell('git', ['remote'], cwd);
-                hasRemote = remote.trim().length > 0;
-            } catch { }
-
-            let ahead = 0;
-            let behind = 0;
-            if (hasRemote) {
-                try {
-                    await MockTauriService.executeShell('git', ['fetch', '--dry-run'], cwd);
-                    const count = await MockTauriService.executeShell('git', ['rev-list', '--left-right', '--count', `${branch}...origin/${branch}`], cwd);
-                    const parts = count.trim().split(/\s+/);
-                    if (parts.length === 2) {
-                        ahead = parseInt(parts[0]);
-                        behind = parseInt(parts[1]);
-                    }
-                } catch { }
-            }
-
-            return { isRepo: true, currentBranch: branch, isDirty, hasRemote, behind, ahead };
-        } catch (e) {
-            console.error("[Git] Status check failed", e);
-            return { isRepo: false, currentBranch: '', isDirty: false, hasRemote: false, behind: 0, ahead: 0 };
         }
+
+        // Fallback or Empty state
+        return { isRepo: false, currentBranch: '', isDirty: false, hasRemote: false, behind: 0, ahead: 0 };
     }
 
     async initRepo(): Promise<boolean> {

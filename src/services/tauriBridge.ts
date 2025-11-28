@@ -39,20 +39,54 @@ export class MockTauriService {
     return typeof window !== 'undefined' && (!!window.__TAURI__ || !!window.__TAURI_INTERNALS__);
   }
 
-  // --- NEW RUST COMMAND ---
+  // --- NATIVE RUST BRIDGE ---
+
   static async getProjectTree(path: string): Promise<any[]> {
     if (this.isTauri()) {
       try {
-        console.log(`[Bridge] Invoking Rust get_project_tree for ${path}`);
         return await invoke('get_project_tree', { path });
       } catch (e) {
         console.error("Rust tree scan failed:", e);
         return [];
       }
     }
-    // Fallback for browser mode
     return [];
   }
+
+  static async getGitStatus(path: string): Promise<any> {
+    if (this.isTauri()) {
+      try {
+        return await invoke('get_git_status', { path });
+      } catch (e) {
+        // Quiet fail for non-repos
+        return null;
+      }
+    }
+    return { is_repo: true, current_branch: "mock-main", is_dirty: false, has_remote: false, ahead: 0, behind: 0 };
+  }
+
+  static async gitInit(path: string): Promise<string> {
+    if (this.isTauri()) {
+      return await invoke('git_init', { path });
+    }
+    return "Mock Init";
+  }
+
+  static async gitAddAll(path: string): Promise<string> {
+    if (this.isTauri()) {
+      return await invoke('git_add_all', { path });
+    }
+    return "Mock Add";
+  }
+
+  static async gitCommit(path: string, message: string): Promise<string> {
+    if (this.isTauri()) {
+      return await invoke('git_commit', { path, message });
+    }
+    return "Mock Commit";
+  }
+
+  // --- STANDARD PLUGINS ---
 
   static async openDialog(): Promise<string | null> {
     if (this.isTauri()) {
@@ -120,8 +154,6 @@ export class MockTauriService {
       try {
         return await readTextFile(path);
       } catch (e) {
-        // Suppress error log for file not found (common in scanning)
-        // console.error(`Failed to read file ${path}:`, e);
         throw e;
       }
     }
@@ -213,7 +245,6 @@ export class MockTauriService {
         };
 
       } catch (e: any) {
-        // FIX: Ensure we return a valid string message
         const msg = e.message || (typeof e === 'string' ? e : JSON.stringify(e));
         throw new Error(`Failed to spawn '${command}': ${msg}`);
       }
