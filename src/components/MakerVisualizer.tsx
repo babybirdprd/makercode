@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { SubTask, AgentStatus, TaskStatus, MakerConfig } from '../types';
-import { CheckCircle, Circle, AlertCircle, Loader2, Cpu, Zap, ShieldAlert, GitBranch, GitMerge, Clock, Save, Eye, ClipboardList, Terminal, Download } from 'lucide-react';
+import { CheckCircle, Circle, AlertCircle, Loader2, Cpu, Zap, ShieldAlert, GitBranch, GitMerge, Clock, Save, Terminal, Download, ClipboardList } from 'lucide-react';
 import { VotingInspector } from './VotingInspector';
 import { StepDetailView } from './StepDetailView';
 import { MockTauriService } from '../services/tauriBridge';
@@ -25,7 +25,6 @@ export const MakerVisualizer: React.FC<MakerVisualizerProps> = ({ state, config 
       if (path) {
         const content = JSON.stringify(state, null, 2);
         await MockTauriService.writeFile(path, content);
-        // Note: We don't have a toast function here, but the file saving is explicit
         console.log(`Logs saved to ${path}`);
       }
     } catch (e) {
@@ -34,6 +33,17 @@ export const MakerVisualizer: React.FC<MakerVisualizerProps> = ({ state, config 
       setIsExporting(false);
     }
   };
+
+  // Memoized handlers to prevent re-renders in child components
+  const handleInspectVote = useCallback((step: SubTask) => {
+    if (step.status === AgentStatus.PASSED || step.status === AgentStatus.VOTING) {
+      setInspectingStep(step);
+    }
+  }, []);
+
+  const handleViewDetails = useCallback((step: SubTask) => {
+    setDetailStep(step);
+  }, []);
 
   if (!state || state.decomposition.length === 0) {
     return (
@@ -112,8 +122,8 @@ export const MakerVisualizer: React.FC<MakerVisualizerProps> = ({ state, config 
               key={step.id}
               step={step}
               index={idx}
-              onInspectVote={() => step.status === AgentStatus.PASSED || step.status === AgentStatus.VOTING ? setInspectingStep(step) : null}
-              onViewDetails={() => setDetailStep(step)}
+              onInspectVote={handleInspectVote}
+              onViewDetails={handleViewDetails}
             />
           ))}
         </div>
@@ -122,7 +132,15 @@ export const MakerVisualizer: React.FC<MakerVisualizerProps> = ({ state, config 
   );
 };
 
-const StepCard: React.FC<{ step: SubTask; index: number; onInspectVote: () => void; onViewDetails: () => void }> = ({ step, index, onInspectVote, onViewDetails }) => {
+interface StepCardProps {
+  step: SubTask;
+  index: number;
+  onInspectVote: (step: SubTask) => void;
+  onViewDetails: (step: SubTask) => void;
+}
+
+// Optimization: Memoize StepCard to prevent re-rendering the entire list on every state update
+const StepCard = React.memo<StepCardProps>(({ step, index, onInspectVote, onViewDetails }) => {
   const getStatusColor = (s: AgentStatus) => {
     switch (s) {
       case AgentStatus.PLANNING: return 'border-indigo-500/30 bg-indigo-900/5 text-gray-400';
@@ -192,7 +210,7 @@ const StepCard: React.FC<{ step: SubTask; index: number; onInspectVote: () => vo
 
           <div className="flex gap-2">
             <button
-              onClick={onViewDetails}
+              onClick={() => onViewDetails(step)}
               className="p-1.5 rounded-sm bg-gray-900/50 hover:bg-white/10 text-gray-400 hover:text-white transition-colors border border-gray-800"
               title="View Flight Recorder"
             >
@@ -222,7 +240,7 @@ const StepCard: React.FC<{ step: SubTask; index: number; onInspectVote: () => vo
         {(step.status === AgentStatus.VOTING || (step.status === AgentStatus.PASSED && step.riskScore > 0.5)) && (
           <div
             className={`mt-2 pt-2 border-t border-gray-700/50 ${isVoteInspectable ? 'cursor-pointer hover:bg-white/5 p-2 -mx-2 rounded-sm transition-colors' : ''}`}
-            onClick={isVoteInspectable ? onInspectVote : undefined}
+            onClick={isVoteInspectable ? () => onInspectVote(step) : undefined}
           >
             <div className="flex items-center gap-2 mb-1">
               <span className="text-[10px] uppercase font-bold text-gray-500">MAKER Consensus Engine</span>
@@ -242,4 +260,13 @@ const StepCard: React.FC<{ step: SubTask; index: number; onInspectVote: () => vo
       </div>
     </div>
   );
-};
+}, (prev, next) => {
+  // Custom comparison to reduce re-renders. 
+  // We only re-render if status, logs, or candidates change.
+  return (
+    prev.step.status === next.step.status &&
+    prev.step.logs.length === next.step.logs.length &&
+    prev.step.candidates?.length === next.step.candidates?.length &&
+    prev.step.riskScore === next.step.riskScore
+  );
+});

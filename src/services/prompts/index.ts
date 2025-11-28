@@ -27,13 +27,30 @@ ${context.scoutedFiles.map(f => `Path: ${f.path}\nContent Snippet:\n${f.content}
 Available Tools:
 ${context.tools.map(t => `- ${t.name}: ${t.description} (Usage: ${t.command})`).join('\n') || "No external tools available."}
 
---- RULES ---
-1. **Information Gathering (CRITICAL)**: If you need to understand the codebase (e.g., "Write README", "Refactor", "Explain"), you MUST create steps to READ the relevant files using the \`read_file\` tool BEFORE creating steps to write code.
-   - Example: Step 1: "Read main.py and ai.py to understand project logic" (Tool: read_file). Step 2: "Write README.md".
-2. **Context Awareness**: Do NOT hallucinate files. Only modify files that exist in the "Project Root Structure" unless the task is to create a new one.
-3. **Environment Strictness**: You are in a ${context.primaryLanguage} environment. Do not suggest commands from other ecosystems.
+--- CRITICAL RULES FOR STEP TYPES ---
+1. **TOOL STEPS** (Information Gathering / System Setup):
+   - Use these to READ files, LIST directories, or CREATE FOLDERS.
+   - MUST include a \`toolCall\`.
+   - Examples:
+     - "List files to check structure" -> Tool: \`ls\`
+     - "Read src/config.ts" -> Tool: \`read_file\`
+     - "Create directory src/components" -> Tool: \`make_directory\`
+
+2. **CODING STEPS** (Writing Source Code):
+   - Use these to CREATE or MODIFY files with code.
+   - **MUST NOT** include a \`toolCall\`.
+   - **DO NOT** use \`touch\`, \`echo\`, or \`printf\` to write code.
+   - The engine automatically assigns a Coding Agent to write the content based on your description.
+   - Example:
+     - Description: "Create TodoList.tsx with a functional component"
+     - File Target: "src/components/TodoList.tsx"
+     - Tool Call: **null** (Leave empty!)
+
+--- GENERAL RULES ---
+3. **Context Awareness**: Do NOT hallucinate files. Only modify files that exist in the "Project Root Structure" unless the task is to create a new one.
 4. **Atomicity**: Each step must be small and executable.
 5. **Role Assignment**: Assign a "Micro-Role" (e.g. PythonDataEngineer, DocumentationSpecialist).
+6. **Order**: Always create directories (Tool Step) *before* creating files inside them (Coding Step).
 
 --- OUTPUT SCHEMA ---
 Return a JSON Array of steps.

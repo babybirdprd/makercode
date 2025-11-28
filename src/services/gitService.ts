@@ -28,8 +28,6 @@ export class GitService {
     async getStatus(): Promise<GitStatus> {
         const cwd = this.getRoot();
 
-        // REFACTORED: Use native Rust command instead of parsing shell stdout
-        // This is much faster and atomic
         if (cwd) {
             const nativeStatus = await MockTauriService.getGitStatus(cwd);
             if (nativeStatus) {
@@ -50,12 +48,20 @@ export class GitService {
 
     async initRepo(): Promise<boolean> {
         const cwd = this.getRoot();
+        if (!cwd) return false;
+
         try {
-            await MockTauriService.executeShell('git', ['init'], cwd);
-            await this.ensureGitIgnore(); // Ensure we don't track garbage
-            await MockTauriService.executeShell('git', ['branch', '-M', 'main'], cwd);
-            await MockTauriService.executeShell('git', ['add', '.'], cwd);
-            await MockTauriService.executeShell('git', ['commit', '--allow-empty', '-m', 'Initial commit by MakerCode'], cwd);
+            // Rustification: Use native git init via libgit2
+            await MockTauriService.gitInit(cwd);
+
+            await this.ensureGitIgnore();
+
+            // Rustification: Use native add all
+            await MockTauriService.gitAddAll(cwd);
+
+            // Rustification: Use native commit
+            await MockTauriService.gitCommit(cwd, 'Initial commit by MakerCode');
+
             return true;
         } catch (e) {
             console.error("Failed to init repo", e);
@@ -75,9 +81,7 @@ src-tauri/target
 .env
         `.trim();
 
-        // Check if exists, if not write it
         try {
-            // We use VFS here which handles the pathing internally
             const vfs = VirtualFileSystem.getInstance();
             const existing = await vfs.readFile('.gitignore');
             if (!existing) throw new Error("Missing");
@@ -89,14 +93,22 @@ src-tauri/target
 
     async commitAll(message: string, overrideCwd?: string): Promise<void> {
         const cwd = overrideCwd || this.getRoot();
+        if (!cwd) throw new Error("No active project root");
+
         try {
-            // Ensure ignore file exists to prevent adding 'target' folder issues
-            // Only check ignore if we are in root (no overrideCwd)
             if (!overrideCwd) await this.ensureGitIgnore();
 
-            // Use -A (all) instead of . to handle deletions/moves better
-            await MockTauriService.executeShell('git', ['add', '-A'], cwd);
-            await MockTauriService.executeShell('git', ['commit', '-m', message], cwd);
+            // Rustification: If we are in the root (standard commit), use the fast Rust bindings
+            if (!overrideCwd) {
+                await MockTauriService.gitAddAll(cwd);
+                await MockTauriService.gitCommit(cwd, message);
+            } else {
+                // Fallback: Worktree operations might require shell if they are outside the main repo context contextually
+                // or if we haven't exposed worktree-specific logic in lib.rs yet.
+                // For now, keep shell for worktrees to be safe.
+                await MockTauriService.executeShell('git', ['add', '-A'], cwd);
+                await MockTauriService.executeShell('git', ['commit', '-m', message], cwd);
+            }
         } catch (e: any) {
             console.error("Commit failed", e);
             throw new Error(`Commit failed: ${e.message || e}`);
@@ -186,9 +198,19 @@ src-tauri/target
 
     async createCheckpoint(message: string, files: string[] = ['.'], overrideCwd?: string) {
         const cwd = overrideCwd || this.getRoot();
-        console.log(`[Git] Checkpointing in ${cwd || 'root'}: ${message}`);
-        await MockTauriService.executeShell('git', ['add', ...files], cwd);
-        await MockTauriService.executeShell('git', ['commit', '-m', `MAKER: ${message}`], cwd);
+        if (!cwd) return;
+
+        console.log(`[Git] Checkpointing in ${cwd}: ${message}`);
+
+        // Optimization: If we are checkpointing everything in the main root, use Rust
+        if (!overrideCwd && files.length === 1 && files[0] === '.') {
+            await MockTauriService.gitAddAll(cwd);
+            await MockTauriService.gitCommit(cwd, `MAKER: ${message}`);
+        } else {
+            // Specific files or worktrees still need shell
+            await MockTauriService.executeShell('git', ['add', ...files], cwd);
+            await MockTauriService.executeShell('git', ['commit', '-m', `MAKER: ${message}`], cwd);
+        }
     }
 
     async mergeWorktreeToMain(branchName: string, message: string): Promise<boolean> {
@@ -196,7 +218,8 @@ src-tauri/target
         console.log(`[Git] Merging ${branchName} into main...`);
         try {
             await MockTauriService.executeShell('git', ['merge', '--squash', branchName], cwd);
-            await MockTauriService.executeShell('git', ['commit', '-m', `MAKER Merge: ${message}`], cwd);
+            // Rust commit for the merge commit
+            if (cwd) await MockTauriService.gitCommit(cwd, `MAKER Merge: ${message}`);
             return true;
         } catch (e) {
             console.error("Merge failed (likely conflict):", e);
@@ -251,7 +274,6 @@ src-tauri/target
     async resolveConflict(conflictId: string, resolutionContent: string): Promise<void> {
         const cwd = this.getRoot();
         console.log(`[Git] Resolving conflict for ${conflictId}`);
-        // Write file using VFS to ensure it goes to the right place
         await VirtualFileSystem.getInstance().writeFile(conflictId, resolutionContent);
         await MockTauriService.executeShell('git', ['add', conflictId], cwd);
     }

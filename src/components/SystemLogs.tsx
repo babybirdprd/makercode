@@ -8,7 +8,11 @@ export const SystemLogs: React.FC = () => {
 
     useEffect(() => {
         const logger = Logger.getInstance();
-        const unsub = logger.subscribe(setLogs);
+        const unsub = logger.subscribe((allLogs) => {
+            // Optimization: Only keep the last 200 logs in the UI to prevent DOM bloat
+            const sliced = allLogs.slice(-200);
+            setLogs(sliced);
+        });
         return unsub;
     }, []);
 
@@ -21,7 +25,7 @@ export const SystemLogs: React.FC = () => {
     return (
         <div className="flex flex-col h-full bg-gray-950">
             <div className="flex justify-between items-center px-2 py-1 border-b border-gray-800 bg-gray-900/50">
-                <span className="text-[10px] text-gray-500 uppercase tracking-wider">Application Events</span>
+                <span className="text-[10px] text-gray-500 uppercase tracking-wider">Application Events (Last 200)</span>
                 <button
                     onClick={() => Logger.getInstance().clear()}
                     className="p-1 hover:bg-gray-800 rounded text-gray-500 hover:text-gray-300"

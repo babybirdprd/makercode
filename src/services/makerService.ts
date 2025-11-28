@@ -349,12 +349,30 @@ export class MakerEngine {
             } while (currentRedFlags.length > 0 && redFlagAttempts <= maxRedFlagRetries);
 
             this.updateStepStatus(index, AgentStatus.EXECUTING, { trace: traceData });
-            const targetPath = worktreeInfo ? `${worktreeInfo.path}/${step.fileTarget}` : step.fileTarget;
 
+            // --- PATH RESOLUTION FIX ---
+            let targetPath = step.fileTarget;
+            const root = vfs.getRoot();
+
+            if (worktreeInfo) {
+                targetPath = `${worktreeInfo.path}/${step.fileTarget}`;
+            } else if (root) {
+                // If no worktree, ensure we write relative to project root
+                // Remove ./ if present
+                const cleanRel = step.fileTarget.replace(/^\.\//, '');
+                targetPath = `${root}/${cleanRel}`;
+            }
+
+            // Ensure directory exists
             const dir = targetPath.substring(0, targetPath.lastIndexOf('/'));
             if (dir && dir !== '.') await MockTauriService.mkdir(dir);
 
-            await MockTauriService.writeFile(targetPath, content);
+            // Use VFS for non-worktree writes to keep cache in sync
+            if (!worktreeInfo && root) {
+                await vfs.writeFile(step.fileTarget, content);
+            } else {
+                await MockTauriService.writeFile(targetPath, content);
+            }
 
             // --- LINTER LOOP ---
             const provider = this.langRegistry.getProvider(targetPath);
@@ -385,7 +403,13 @@ export class MakerEngine {
 
                     const retryResult = await this.generateCode(step, agent, context, fullContext, lintErrors.join('\n'));
                     content = retryResult.content;
-                    await MockTauriService.writeFile(targetPath, content);
+
+                    // Re-write file
+                    if (!worktreeInfo && root) {
+                        await vfs.writeFile(step.fileTarget, content);
+                    } else {
+                        await MockTauriService.writeFile(targetPath, content);
+                    }
                     lintAttempts++;
                 } else {
                     console.log("Triggering Re-plan due to persistent lint errors...");
