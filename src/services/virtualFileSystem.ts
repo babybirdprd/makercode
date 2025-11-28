@@ -43,7 +43,6 @@ export class VirtualFileSystem {
         } catch (e: any) {
             console.error("[VFS] Failed to start watcher.", e);
             console.error("[VFS] CRITICAL: Ensure 'tauri-plugin-fs' has the 'watch' feature enabled in src-tauri/Cargo.toml");
-            // No polling fallback - we rely on the real solution.
         }
 
         // Initial scan
@@ -114,46 +113,12 @@ export class VirtualFileSystem {
 
     async getDirectoryTree(): Promise<any[]> {
         if (!this.projectRoot) return this.buildTreeFromCache();
-        return this.scanDir(this.projectRoot, '');
-    }
 
-    private async scanDir(absolutePath: string, relativePath: string): Promise<any[]> {
+        // REFACTORED: Use the new Rust command for atomic, fast scanning
         try {
-            const entries = await MockTauriService.listFiles(absolutePath);
-
-            const nodes = await Promise.all(entries.map(async (entry: any) => {
-                const entryRelativePath = relativePath
-                    ? `${relativePath}/${entry.name}`
-                    : `/${entry.name}`;
-
-                const entryAbsolutePath = `${absolutePath}/${entry.name}`;
-
-                const node: any = {
-                    name: entry.name,
-                    path: entryRelativePath,
-                    isDirectory: entry.isDirectory,
-                };
-
-                if (entry.isDirectory) {
-                    if (['node_modules', '.git', 'target', 'dist', 'build', '.maker', '__pycache__', 'venv', '.vscode'].includes(entry.name)) {
-                        node.children = [];
-                    } else {
-                        try {
-                            node.children = await this.scanDir(entryAbsolutePath, entryRelativePath);
-                        } catch {
-                            node.children = [];
-                        }
-                    }
-                }
-                return node;
-            }));
-
-            return nodes.sort((a: any, b: any) => {
-                if (a.isDirectory === b.isDirectory) return a.name.localeCompare(b.name);
-                return a.isDirectory ? -1 : 1;
-            });
+            return await MockTauriService.getProjectTree(this.projectRoot);
         } catch (e) {
-            console.error(`[VFS] Failed to scan dir ${absolutePath}`, e);
+            console.error("[VFS] Rust tree scan failed, falling back to cache/empty.", e);
             return [];
         }
     }

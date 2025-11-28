@@ -1,6 +1,7 @@
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { readDir, readTextFile, writeTextFile, mkdir, watch } from '@tauri-apps/plugin-fs';
 import { Command } from '@tauri-apps/plugin-shell';
+import { invoke } from '@tauri-apps/api/core';
 
 declare global {
   interface Window {
@@ -36,6 +37,21 @@ export interface ProcessHandle {
 export class MockTauriService {
   private static isTauri(): boolean {
     return typeof window !== 'undefined' && (!!window.__TAURI__ || !!window.__TAURI_INTERNALS__);
+  }
+
+  // --- NEW RUST COMMAND ---
+  static async getProjectTree(path: string): Promise<any[]> {
+    if (this.isTauri()) {
+      try {
+        console.log(`[Bridge] Invoking Rust get_project_tree for ${path}`);
+        return await invoke('get_project_tree', { path });
+      } catch (e) {
+        console.error("Rust tree scan failed:", e);
+        return [];
+      }
+    }
+    // Fallback for browser mode
+    return [];
   }
 
   static async openDialog(): Promise<string | null> {

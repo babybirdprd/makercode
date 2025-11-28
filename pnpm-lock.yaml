@@ -11,6 +11,9 @@ importers:
       '@google/genai':
         specifier: ^1.30.0
         version: 1.30.0
+      '@tauri-apps/api':
+        specifier: ^2.0.0
+        version: 2.9.0
       '@tauri-apps/plugin-dialog':
         specifier: ^2.0.0
         version: 2.4.2
