@@ -101,14 +101,18 @@ Agents have access to a suite of system tools:
 
 We are actively moving performance-critical components from TypeScript/Shell to Native Rust.
 
+**Architectural Policy:** We prioritize **Official Tauri Plugins** (`tauri-plugin-*`) for stability, security, and maintenance. Custom Rust Commands are only implemented when official plugins cannot satisfy specific performance or functionality requirements (e.g., deep recursive git operations).
+
 | Component | Current Status | Target | Reason |
 | :--- | :--- | :--- | :--- |
-| **Git Operations** | ✅ Rust (`git2`) | Rust | Speed & Reliability (No shell spawning) |
-| **File Scanning** | ✅ Rust (`walkdir`) | Rust | Handling large `node_modules` without freezing |
-| **Grep / Search** | ⚠️ Shell (`rg`) | Rust (`grep-searcher`) | Eliminate dependency on external `rg` binary |
-| **AST Parsing** | ⚠️ TypeScript (`babel`) | Rust (`swc` / `oxc`) | Faster "Red Flag" analysis for syntax errors |
-| **Worktree Mgmt** | ⚠️ Shell (`git worktree`) | Rust (`git2`) | Atomic worktree creation/pruning is complex in shell |
-| **Terminal PTY** | ⚠️ Shell (`spawn`) | Rust (`portable-pty`) | Real interactive terminal support |
+| **File System** | ✅ `tauri-plugin-fs` | `tauri-plugin-fs` | Official standard for file I/O. |
+| **Shell/Process** | ✅ `tauri-plugin-shell` | `tauri-plugin-shell` | Official standard for secure spawning. |
+| **Dialogs** | ✅ `tauri-plugin-dialog` | `tauri-plugin-dialog` | Official standard for native UI. |
+| **Git Operations** | ✅ Rust (`git2`) | Custom Rust Command | No official plugin; `git2` required for atomic speed. |
+| **File Scanning** | ✅ Rust (`walkdir`) | Custom Rust Command | `fs.readDir` is too slow for deep recursion. |
+| **Grep / Search** | ⚠️ Shell (`rg`) | Custom Rust Command | Eliminate dependency on external `rg` binary. |
+| **AST Parsing** | ⚠️ TypeScript (`babel`) | Custom Rust Command | Faster "Red Flag" analysis using `swc`/`oxc`. |
+| **Worktree Mgmt** | ⚠️ Shell (`git worktree`) | Custom Rust Command | Atomic worktree logic requires `git2`. |
 
 ---
 
