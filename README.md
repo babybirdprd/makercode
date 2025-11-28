@@ -60,62 +60,51 @@ Agents have access to a suite of system tools:
 
 ---
 
-## 🗺️ ROADMAP
+## 🗺️ ROADMAP TO LAUNCH
 
-### Phase 1: The Foundation (✅ Completed)
-*   [x] **Hybrid Architecture**: React 19 frontend + Rust/Tauri v2 backend.
-*   [x] **Virtual File System**: Async read/write bridging with recursive directory scanning.
-*   [x] **Project Persistence**: `.maker/config.json` support.
+We are moving from "Academic Prototype" to "Commercial Product". This roadmap prioritizes Engineering Rigor, Developer Experience (DX), and MAKER Fidelity.
 
-### Phase 2: The Wiring (✅ Completed)
-*   [x] **Local Git Abstraction**: Internal client, worktree isolation, and dirty state protection.
-*   [x] **Polyglot Support**: Language Registry and Manifest Detection.
-*   [x] **Context Awareness**: Heuristic stack detection (Python/Node/Rust).
+### Phase 6: Engineering Rigor (Testing & CI/CD)
+*Objective: Stop paying API fees to verify if the app works.*
+*   [ ] **Deterministic LLM Mocking**: Implement a "VCR-style" record/replay system for `LLMClient`. This allows running the entire `StepExecutor` logic in CI without hitting OpenAI/Gemini.
+*   [ ] **Integration Test Suite**: Automated tests for `GitService` (Worktree creation/cleanup) and `VirtualFileSystem` using an in-memory test harness.
+*   [ ] **Performance Benchmarking**: Automated tracking of "Time to Decomposition" and "Time to Consensus".
 
-### Phase 3: The "Brain" Upgrade (✅ Completed)
-*   [x] **Provider Agnostic AI**: Support for Gemini, OpenAI, etc.
-*   [x] **Consensus Engine**: Multi-agent voting and semantic judging.
-*   [x] **Dynamic Re-planning**: Auto-decomposition of failed steps.
+### Phase 7: The "Pro" Editor Experience (DX)
+*Objective: Replace the `<textarea>` with a tool developers actually respect.*
+*   [ ] **CodeMirror Integration**: Replace the basic editor with CodeMirror 6.
+    *   Syntax Highlighting (TS, Rust, Python).
+    *   Basic LSP support (Go to Definition, Hover info).
+    *   Vim Keybinding mode.
+*   [ ] **Native Terminal (PTY)**: Replace the read-only log stream with a real interactive terminal (using `xterm.js` + `portable-pty` in Rust) to allow users to run `npm start` or `git push` manually.
+*   [ ] **Git Auth Wizard**: In-app UI for SSH Key management and Credential Helper configuration to prevent "Permission Denied" errors during agent execution.
 
-### Phase 4: Observability & Insights (✅ Completed)
-*   [x] **The Flight Recorder**: Detailed JSON export of execution traces (Prompts, Responses, Red Flags).
-*   [x] **Step Detail View**: UI to inspect the raw output and logs of any specific step.
-*   [x] **Red Flag Indicators**: Visual warnings when agents produce outputs that violate constraints.
+### Phase 8: Prompt Architecture 2.0
+*Objective: Treat prompts as code.*
+*   [ ] **Prompt Registry**: Move hardcoded strings from `src/services/prompts` to external `.yaml` or `.json` definitions.
+*   [ ] **Prompt Versioning**: Allow A/B testing of different decomposition strategies.
+*   [ ] **Metaprompting**: Implement a "Prompt Refiner" agent that optimizes Micro-Role descriptions before they are sent to the execution model.
 
-### Phase 5: Prompt Architecture 2.0 (✅ Completed)
-*   [x] **Prompt Registry**: Centralized, structured prompts.
-*   [x] **Micro-Role Generation**: Dynamic persona assignment (e.g., "DocumentationSpecialist").
-*   [x] **Strict Output Gates**: "Red-flagging" logic that detects and rejects hallucinations (e.g., `npm` in Python).
-*   [x] **Read-Before-Write**: Architects are prompted to schedule `read_file` steps before `write_file` steps.
+### Phase 9: MAKER "Zero Error" Convergence
+*Objective: Close the gap between our code and the MAKER Paper.*
+*   [ ] **Dynamic "Ahead-by-K" Voting**: Upgrade `VotingService` from a fixed committee (3 agents) to a statistical model that spawns new voters until a confidence threshold (K) is met.
+*   [ ] **Semantic Red-Flagging (AST)**: Replace fragile Regex checks with real AST analysis (using `oxc` or `swc` in Rust).
+    *   *Example:* Detect "Variable used before declaration" or "Importing non-existent module" *before* running the linter.
+*   [ ] **Tiered Model Routing**: Automatically route complex "Architect" tasks to high-IQ models (e.g., o3-mini) and simple "Linter" tasks to fast models (e.g., Gemini Flash).
 
-### Phase 6: The "Engineer-First" Adaptation (🚧 PRIORITY)
-We are refining the framework to match real-world software engineering flows.
-*   [ ] **Tiered Model Strategy**:
-    *   *Reasoning Tier* (e.g., o3-mini, R1) for Architecture & Decomposition.
-    *   *Coding Tier* (e.g., Sonnet 3.5, GPT-4o) for Code Generation.
-    *   *Fast Tier* (e.g., Flash, Haiku) for Tooling & Linting.
-*   [ ] **Adaptive Checkpointing**: Move away from rigid "commit-per-step".
-    *   *Small Tasks*: Single squash commit at completion.
-    *   *Large Tasks*: Intelligent milestone-based checkpoints (e.g., after "Backend Setup" is complete).
-*   [ ] **Non-Blocking Workflow**: Allow agents to run in Worktrees even if the main working directory is dirty (Auto-Stash or Ignore).
-*   [ ] **Continuous Sessions**: Implement proper session lifecycle management to allow starting new tasks without restarting the application.
-
-### Phase 7: "Ironclad" Reliability & Performance
-*   [ ] **Rust-Based AST Analysis**: Replace Regex linters with Tree-sitter in Rust for semantic "Red-Flagging" (detecting logic errors, not just syntax).
-*   [ ] **UI/Engine Decoupling**: Refactor `MakerEngine` to use a throttled event loop to prevent UI lock-ups during high-speed execution.
-*   [ ] **Virtualization**: Implement windowing for System Logs and Terminal to handle long-running sessions without memory bloat.
-
-### Phase 8: Tooling Ecosystem
-*   [ ] **User-Defined Tools**: UI to register custom CLI commands as tools available to agents.
-*   [ ] **Tool Permission System**: "Human-in-the-loop" approval for dangerous tools (e.g., `rm -rf`, `deploy`).
+### Phase 10: Enterprise Reliability
+*Objective: Safety, Persistence, and Cost Control.*
+*   [ ] **Session Persistence**: Replace in-memory state with SQLite/LocalDB. Allow users to close the app and resume a "Million Step" task later.
+*   [ ] **Tokenometer & Budget Caps**: Real-time cost tracking with hard stops (e.g., "Pause task if cost exceeds $5.00").
+*   [ ] **Sandboxed Execution**: Explore `docker` or `firecracker` integration for running agent code in true isolation (beyond just Git Worktrees).
 
 ---
 
 ## 🦀 The "Rustification" Roadmap
 
-We are actively moving performance-critical components from TypeScript/Shell to Native Rust.
+We are moving performance-critical components from TypeScript/Shell to Native Rust.
 
-**Architectural Policy:** We prioritize **Official Tauri Plugins** (`tauri-plugin-*`) for stability, security, and maintenance. Custom Rust Commands are only implemented when official plugins cannot satisfy specific performance or functionality requirements (e.g., deep recursive git operations).
+**Architectural Policy:** We prioritize **Official Tauri Plugins** (`tauri-plugin-*`) for stability. Custom Rust Commands are used only when necessary.
 
 | Component | Current Status | Target | Reason |
 | :--- | :--- | :--- | :--- |
@@ -124,9 +113,9 @@ We are actively moving performance-critical components from TypeScript/Shell to 
 | **Dialogs** | ✅ `tauri-plugin-dialog` | `tauri-plugin-dialog` | Official standard for native UI. |
 | **Git Operations** | ✅ Rust (`git2`) | Custom Rust Command | No official plugin; `git2` required for atomic speed. |
 | **File Scanning** | ✅ Rust (`walkdir`) | Custom Rust Command | `fs.readDir` is too slow for deep recursion. |
-| **Grep / Search** | ⚠️ Shell (`rg`) | Custom Rust Command | Eliminate dependency on external `rg` binary. |
-| **AST Parsing** | ⚠️ TypeScript (`babel`) | Custom Rust Command | Faster "Red Flag" analysis using `swc`/`oxc`. |
-| **Worktree Mgmt** | ⚠️ Shell (`git worktree`) | Custom Rust Command | Atomic worktree logic requires `git2`. |
+| **Terminal PTY** | ❌ None | `portable-pty` | Required for interactive terminal support. |
+| **AST Analysis** | ⚠️ Regex | `oxc` / `tree-sitter` | Required for "Zero Error" Semantic Red-Flagging. |
+| **Search** | ⚠️ Shell (`rg`) | `ignore` + `grep` crate | Eliminate dependency on external `rg` binary. |
 
 ---
 

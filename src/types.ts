@@ -95,6 +95,12 @@ export interface TaskStatus {
     isPlanning: boolean;
 }
 
+export interface EngineState {
+    sessions: TaskStatus[];
+    activeSessionId: string | null;
+    globalActiveWorkers: number;
+}
+
 export interface FileNode {
     id: string;
     name: string;

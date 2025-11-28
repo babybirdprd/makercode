@@ -1,4 +1,4 @@
-import { SubTask, AgentStatus, TaskStatus, MakerConfig, AgentProfile } from "../types";
+import { SubTask, AgentStatus, TaskStatus, MakerConfig, AgentProfile, EngineState } from "../types";
 import { GitService } from "./gitService";
 import { VirtualFileSystem } from "./virtualFileSystem";
 import { LLMFactory, LLMClient } from "./llm";
@@ -38,19 +38,12 @@ export class MakerEngine {
         tools: []
     };
 
-    private state: TaskStatus = {
-        taskId: "init",
-        originalPrompt: "",
-        decomposition: [],
-        totalSteps: 0,
-        completedSteps: 0,
-        errorCount: 0,
-        activeWorkers: 0,
-        conflicts: [],
-        isPlanning: false
-    };
+    // Multi-Session State
+    private sessions: Map<string, TaskStatus> = new Map();
+    private activeSessionId: string | null = null;
+    private globalActiveWorkers: number = 0;
 
-    private listeners: ((state: TaskStatus) => void)[] = [];
+    private listeners: ((state: EngineState) => void)[] = [];
     private isRunning: boolean = false;
 
     constructor() {
@@ -73,7 +66,7 @@ export class MakerEngine {
         this.voter = new VotingService(this.llm);
     }
 
-    subscribe(listener: (state: TaskStatus) => void) {
+    subscribe(listener: (state: EngineState) => void) {
         this.listeners.push(listener);
         return () => {
             this.listeners = this.listeners.filter(l => l !== listener);
@@ -108,12 +101,34 @@ export class MakerEngine {
     }
 
     private notify() {
-        this.listeners.forEach(l => l(this.state));
+        this.listeners.forEach(l => l({
+            sessions: Array.from(this.sessions.values()),
+            activeSessionId: this.activeSessionId,
+            globalActiveWorkers: this.globalActiveWorkers
+        }));
+    }
+
+    switchSession(sessionId: string) {
+        if (this.sessions.has(sessionId)) {
+            this.activeSessionId = sessionId;
+            this.notify();
+        }
     }
 
     async startTask(prompt: string) {
-        this.state = {
-            taskId: Date.now().toString(),
+        // Concurrency Gate
+        if (this.globalActiveWorkers > 0 && !this.config.useGitWorktrees) {
+            // Check if there are other sessions running
+            const runningSessions = Array.from(this.sessions.values()).filter(s => s.activeWorkers > 0);
+            if (runningSessions.length > 0) {
+                throw new Error("Parallel tasks require Git Worktrees to be enabled in Settings.");
+            }
+        }
+
+        const newSessionId = Date.now().toString();
+
+        const newSession: TaskStatus = {
+            taskId: newSessionId,
             originalPrompt: prompt,
             decomposition: [],
             totalSteps: 0,
@@ -123,17 +138,25 @@ export class MakerEngine {
             conflicts: [],
             isPlanning: false
         };
+
+        this.sessions.set(newSessionId, newSession);
+        this.activeSessionId = newSessionId;
         this.notify();
 
         try {
+            // Initial Git checks (only if this is the first session or worktrees enabled)
             const status = await this.git.getStatus();
             if (!status.isRepo) await this.git.initRepo();
+
+            // Auto-checkpoint only if main branch is dirty and we aren't using worktrees (conflict risk)
+            // If using worktrees, we can stash or ignore, but here we checkpoint for safety.
             if (status.isDirty) await this.git.createCheckpoint("Auto-Checkpoint before Task Start");
 
             const allTools = this.toolService.getAvailableTools(this.config.tools || []);
             const decomposition = await this.decomposer.decompose(prompt, allTools);
 
-            this.state.decomposition = decomposition.map(d => ({
+            const session = this.sessions.get(newSessionId)!;
+            session.decomposition = decomposition.map(d => ({
                 id: d.id || Math.random().toString(36).substring(2, 10),
                 description: d.description || "Unspecified Task",
                 fileTarget: d.fileTarget || "./",
@@ -149,134 +172,163 @@ export class MakerEngine {
                 candidates: [],
                 toolCall: d.toolCall
             }));
-            this.state.totalSteps = this.state.decomposition.length;
-            this.state.isPlanning = true;
+            session.totalSteps = session.decomposition.length;
+            session.isPlanning = true;
             this.notify();
 
         } catch (e: any) {
             console.error("[MakerEngine] Start Task Failed:", e);
-            this.state.errorCount++;
-            this.state.decomposition = [{
-                id: "error",
-                description: "Decomposition Failed: " + e.message,
-                fileTarget: "error.log",
-                status: AgentStatus.FAILED,
-                attempts: 1,
-                votes: 0,
-                riskScore: 1,
-                logs: [e.message],
-                dependencies: []
-            }];
-            this.state.isPlanning = false;
+            const session = this.sessions.get(newSessionId);
+            if (session) {
+                session.errorCount++;
+                session.decomposition = [{
+                    id: "error",
+                    description: "Decomposition Failed: " + e.message,
+                    fileTarget: "error.log",
+                    status: AgentStatus.FAILED,
+                    attempts: 1,
+                    votes: 0,
+                    riskScore: 1,
+                    logs: [e.message],
+                    dependencies: []
+                }];
+                session.isPlanning = false;
+            }
             this.notify();
             throw e;
         }
     }
 
     async executePlan() {
-        this.state.isPlanning = false;
-        this.state.decomposition = this.state.decomposition.map(s => ({ ...s, status: AgentStatus.QUEUED }));
+        if (!this.activeSessionId || !this.sessions.has(this.activeSessionId)) return;
+
+        const session = this.sessions.get(this.activeSessionId)!;
+        session.isPlanning = false;
+        session.decomposition = session.decomposition.map(s => ({ ...s, status: AgentStatus.QUEUED }));
+
         this.notify();
         this.isRunning = true;
         this.processQueue();
     }
 
+    // Global Queue Processor
     private async processQueue() {
         if (!this.isRunning) return;
 
-        const allComplete = this.state.decomposition.every(s => s.status === AgentStatus.PASSED || s.status === AgentStatus.FAILED);
-        if (allComplete) {
-            this.isRunning = false;
-            return;
-        }
+        // Iterate over all sessions
+        for (const [sessionId, session] of this.sessions.entries()) {
 
-        const completedIds = new Set(this.state.decomposition.filter(s => s.status === AgentStatus.PASSED).map(s => s.id));
-        const runnableIndices = this.state.decomposition
-            .map((step, index) => ({ step, index }))
-            .filter(({ step }) => step.status === AgentStatus.QUEUED && step.dependencies.every(depId => completedIds.has(depId)))
-            .map(item => item.index);
-
-        while (this.state.activeWorkers < this.config.maxParallelism && runnableIndices.length > 0) {
-            const index = runnableIndices.shift();
-            if (index !== undefined) {
-                this.state.activeWorkers++;
-                const assignedAgent = this.config.agentProfiles[index % this.config.agentProfiles.length];
-                this.updateStepStatus(index, AgentStatus.QUEUED, { assignedAgentId: assignedAgent.id });
-                this.notify();
-
-                // DELEGATE TO STEP EXECUTOR
-                const executor = new StepExecutor(
-                    this.llm,
-                    this.voter,
-                    this.decomposer,
-                    this.config,
-                    this.state.taskId,
-                    (update) => {
-                        // Merge logs if present
-                        if (update.logs && this.state.decomposition[index].logs) {
-                            update.logs = [...this.state.decomposition[index].logs, ...update.logs];
-                        }
-                        this.updateStepStatus(index, update.status || AgentStatus.THINKING, update);
+            // Check session completion
+            const allComplete = session.decomposition.every(s => s.status === AgentStatus.PASSED || s.status === AgentStatus.FAILED);
+            if (allComplete && session.activeWorkers === 0) {
+                // Handle Final Commit for Micro-Tasks (Adaptive Checkpointing)
+                if (session.totalSteps < 3 && !this.config.useGitWorktrees) {
+                    // Check if we need to commit
+                    const passedSteps = session.decomposition.filter(s => s.status === AgentStatus.PASSED);
+                    if (passedSteps.length > 0) {
+                        await this.git.createCheckpoint(`Completed Task: ${session.originalPrompt.substring(0, 50)}...`, ['.']);
                     }
-                );
+                }
+                continue;
+            }
 
-                executor.execute(this.state.decomposition[index], assignedAgent, this.state.decomposition)
-                    .then(() => {
-                        this.state.activeWorkers--;
-                        this.state.completedSteps++;
-                        this.processQueue();
-                    })
-                    .catch((e: any) => {
-                        // Handle Replan Signal
-                        if (e.message.startsWith('__REPLAN_REQUIRED__:')) {
-                            try {
-                                const newSteps = JSON.parse(e.message.replace('__REPLAN_REQUIRED__:', ''));
-                                const safeNewSteps = newSteps.map((s: any) => ({
-                                    id: s.id || `rescue-${Math.random().toString(36).substr(2, 5)}`,
-                                    description: s.description || "Rescue Step",
-                                    fileTarget: s.fileTarget || this.state.decomposition[index].fileTarget,
-                                    status: AgentStatus.QUEUED,
-                                    attempts: 0,
-                                    votes: 0,
-                                    riskScore: 0,
-                                    logs: ["Re-planned from failed parent"],
-                                    dependencies: s.dependencies || this.state.decomposition[index].dependencies,
-                                    candidates: []
-                                }));
+            // Scheduling
+            const completedIds = new Set(session.decomposition.filter(s => s.status === AgentStatus.PASSED).map(s => s.id));
+            const runnableIndices = session.decomposition
+                .map((step, index) => ({ step, index }))
+                .filter(({ step }) => step.status === AgentStatus.QUEUED && step.dependencies.every(depId => completedIds.has(depId)))
+                .map(item => item.index);
 
-                                const newDecomp = [...this.state.decomposition];
-                                newDecomp.splice(index, 1, ...safeNewSteps);
-                                this.state.decomposition = newDecomp;
-                                this.state.totalSteps = newDecomp.length;
-                                this.notify();
-                            } catch (parseError) {
-                                console.error("Failed to parse replan steps", parseError);
-                                this.failStep(index, "Re-planning failed to parse.");
+            // We use global max parallelism, but we could also limit per session.
+            // For now, we respect global limit.
+            while (this.globalActiveWorkers < this.config.maxParallelism && runnableIndices.length > 0) {
+                const index = runnableIndices.shift();
+                if (index !== undefined) {
+                    this.globalActiveWorkers++;
+                    session.activeWorkers++;
+
+                    const assignedAgent = this.config.agentProfiles[index % this.config.agentProfiles.length];
+                    this.updateStepStatus(sessionId, index, AgentStatus.QUEUED, { assignedAgentId: assignedAgent.id });
+                    this.notify();
+
+                    const executor = new StepExecutor(
+                        this.llm,
+                        this.voter,
+                        this.decomposer,
+                        this.config,
+                        sessionId,
+                        session.totalSteps,
+                        (update) => {
+                            if (update.logs && session.decomposition[index].logs) {
+                                update.logs = [...session.decomposition[index].logs, ...update.logs];
                             }
-                        } else {
-                            // Standard Failure
-                            this.failStep(index, e.message);
+                            this.updateStepStatus(sessionId, index, update.status || AgentStatus.THINKING, update);
                         }
-                        this.state.activeWorkers--;
-                        this.processQueue();
-                    });
+                    );
+
+                    executor.execute(session.decomposition[index], assignedAgent, session.decomposition)
+                        .then(() => {
+                            this.globalActiveWorkers--;
+                            session.activeWorkers--;
+                            session.completedSteps++;
+                            this.processQueue();
+                        })
+                        .catch((e: any) => {
+                            // Handle Replan Signal
+                            if (e.message.startsWith('__REPLAN_REQUIRED__:')) {
+                                try {
+                                    const newSteps = JSON.parse(e.message.replace('__REPLAN_REQUIRED__:', ''));
+                                    const safeNewSteps = newSteps.map((s: any) => ({
+                                        id: s.id || `rescue-${Math.random().toString(36).substr(2, 5)}`,
+                                        description: s.description || "Rescue Step",
+                                        fileTarget: s.fileTarget || session.decomposition[index].fileTarget,
+                                        status: AgentStatus.QUEUED,
+                                        attempts: 0,
+                                        votes: 0,
+                                        riskScore: 0,
+                                        logs: ["Re-planned from failed parent"],
+                                        dependencies: s.dependencies || session.decomposition[index].dependencies,
+                                        candidates: []
+                                    }));
+
+                                    const newDecomp = [...session.decomposition];
+                                    newDecomp.splice(index, 1, ...safeNewSteps);
+                                    session.decomposition = newDecomp;
+                                    session.totalSteps = newDecomp.length;
+                                    this.notify();
+                                } catch (parseError) {
+                                    console.error("Failed to parse replan steps", parseError);
+                                    this.failStep(sessionId, index, "Re-planning failed to parse.");
+                                }
+                            } else {
+                                this.failStep(sessionId, index, e.message);
+                            }
+                            this.globalActiveWorkers--;
+                            session.activeWorkers--;
+                            this.processQueue();
+                        });
+                }
             }
         }
     }
 
-    private failStep(index: number, reason: string) {
-        const newDecomp = [...this.state.decomposition];
+    private failStep(sessionId: string, index: number, reason: string) {
+        const session = this.sessions.get(sessionId);
+        if (!session) return;
+        const newDecomp = [...session.decomposition];
         const currentLogs = newDecomp[index].logs || [];
         newDecomp[index] = { ...newDecomp[index], status: AgentStatus.FAILED, logs: [...currentLogs, reason] };
-        this.state.decomposition = newDecomp;
-        this.state.errorCount++;
+        session.decomposition = newDecomp;
+        session.errorCount++;
         this.notify();
     }
 
-    private updateStepStatus(index: number, status: AgentStatus, extra: Partial<SubTask> = {}) {
-        const newDecomp = [...this.state.decomposition];
+    private updateStepStatus(sessionId: string, index: number, status: AgentStatus, extra: Partial<SubTask> = {}) {
+        const session = this.sessions.get(sessionId);
+        if (!session) return;
+        const newDecomp = [...session.decomposition];
         newDecomp[index] = { ...newDecomp[index], status, ...extra };
-        this.state.decomposition = newDecomp;
+        session.decomposition = newDecomp;
         this.notify();
     }
 }

@@ -23,6 +23,7 @@ export class StepExecutor {
         private decomposer: DecompositionService,
         private config: MakerConfig,
         private taskId: string,
+        private totalSteps: number, // Injected for Adaptive Checkpointing
         private onUpdate: (update: Partial<SubTask>) => void
     ) {
         this.git = GitService.getInstance();
@@ -109,6 +110,11 @@ export class StepExecutor {
                     await this.git.mergeWorktreeToMain(worktreeInfo.branch, `Executed Tool: ${step.description}`);
                 }
             }
+            // Direct Mode: Tool outputs are usually ephemeral or file writes handled by tool itself.
+            // We do not force a commit for tools in direct mode unless it's a big task, handled by handleCodingStep logic usually.
+            // But for consistency, let's apply adaptive logic here too? 
+            // Actually tools like 'ls' shouldn't commit. 'execute_command' might.
+            // For safety, we skip auto-commit for tools in Direct Mode unless explicitly requested.
         }
     }
 
@@ -188,20 +194,32 @@ export class StepExecutor {
         // F. Linter Loop
         await this.handleLinting(step, agent, context, fullContext, targetPath, worktreeInfo, content);
 
-        // G. Checkpoint
+        // G. Checkpoint (Adaptive)
         this.onUpdate({ status: AgentStatus.CHECKPOINTING });
+
         if (this.config.useGitWorktrees && worktreeInfo) {
+            // Worktree Mode: Always commit to worktree branch to save progress
             const didCommit = await this.git.createCheckpoint(step.description, ['.'], worktreeInfo.path);
             if (didCommit) {
                 this.onUpdate({ status: AgentStatus.MERGING });
+                // We always merge worktrees back to main to persist the step
                 const mergeSuccess = await this.git.mergeWorktreeToMain(worktreeInfo.branch, step.description);
                 if (!mergeSuccess) throw new Error("Merge Conflict.");
             }
         } else {
-            await this.git.createCheckpoint(step.description, [step.fileTarget]);
+            // Direct Mode: Adaptive Checkpointing
+            // If task is small (< 3 steps), skip per-step commits. Engine will do one final commit.
+            // If task is large, commit every step for safety.
+            if (this.totalSteps >= 3) {
+                await this.git.createCheckpoint(step.description, [step.fileTarget]);
+            } else {
+                // Skip commit, just log
+                console.log(`[StepExecutor] Skipping checkpoint for micro-task step ${step.id}`);
+            }
         }
     }
 
+    // ... [handleRedFlags, handleLinting, generateCode, assessRisk methods remain same as previous step] ...
     private async handleRedFlags(
         step: SubTask,
         agent: AgentProfile,
@@ -302,14 +320,6 @@ export class StepExecutor {
                 const newSteps = await this.decomposer.replan(step, lintErrors.join('\n'));
 
                 if (newSteps.length > 0) {
-                    // Signal to engine to replace steps (handled via special Error or Event, 
-                    // but for now we throw and let Engine handle it if we passed a callback, 
-                    // or better, handle it here if we had access to the full array reference).
-                    // Since StepExecutor is for ONE step, we can't easily modify the parent array structure
-                    // directly without a callback.
-
-                    // NOTE: In this architecture, Re-planning modifies the main task list.
-                    // We will throw a specific error that the MakerEngine catches to trigger replan.
                     throw new Error(`__REPLAN_REQUIRED__:${JSON.stringify(newSteps)}`);
                 } else {
                     throw new Error(`${provider?.id || 'System'} Linter validation failed: ${lintErrors[0]}`);
