@@ -15,7 +15,8 @@ import {
   Edit2,
   AlertTriangle,
   FileText,
-  Save
+  Save,
+  Loader2
 } from 'lucide-react';
 import { MakerVisualizer } from './components/MakerVisualizer';
 import { TerminalView } from './components/TerminalView';
@@ -373,9 +374,13 @@ export default function App() {
                     <button onClick={handleExecutePlan} className="h-10 px-6 rounded-lg font-medium text-sm flex items-center gap-2 transition-all bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-500/20"><CheckCircle size={16} /> Approve</button>
                   </div>
                 ) : (
-                  <button onClick={handleStartMaker} disabled={isProcessing || makerState?.activeWorkers > 0 || isDirty} className={`h-10 px-6 rounded-lg font-medium text-sm flex items-center gap-2 transition-all ${(isProcessing || makerState?.activeWorkers > 0 || isDirty) ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/20'}`}>
-                    {makerState?.activeWorkers > 0 ? <Activity className="animate-spin" size={16} /> : <Play size={16} />}
-                    {makerState?.activeWorkers > 0 ? 'Executing...' : 'Start Task'}
+                  <button
+                    onClick={handleStartMaker}
+                    disabled={isProcessing || makerState?.activeWorkers > 0 || isDirty}
+                    className={`h-10 px-6 rounded-lg font-medium text-sm flex items-center gap-2 transition-all ${(isProcessing || makerState?.activeWorkers > 0 || isDirty) ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/20'}`}
+                  >
+                    {isProcessing ? <Loader2 className="animate-spin" size={16} /> : (makerState?.activeWorkers > 0 ? <Activity className="animate-spin" size={16} /> : <Play size={16} />)}
+                    {isProcessing ? 'Generating...' : (makerState?.activeWorkers > 0 ? 'Executing...' : 'Start Task')}
                   </button>
                 )}
               </div>

@@ -40,11 +40,11 @@ We strictly adhere to the paper's methodology:
 
 ### 2. The Flight Recorder
 Every action is logged. You can export a detailed JSON trace (`maker_trace.json`) that contains:
-*   The exact prompt sent to the LLM.
-*   The raw response.
-*   Any "Red Flags" detected.
-*   Tool execution logs.
-*   Risk scores and voting outcomes.
+*   **Prompts**: The exact context sent to the LLM.
+*   **Responses**: The raw output generated.
+*   **Red Flags**: Any warnings triggered during generation.
+*   **Tool Logs**: Output from command execution.
+*   **Consensus Data**: Voting outcomes and risk scores.
 
 ### 3. Tooling Ecosystem
 Agents have access to a suite of system tools:
@@ -88,14 +88,28 @@ Agents have access to a suite of system tools:
 *   [x] **Strict Output Gates**: "Red-flagging" logic that detects and rejects hallucinations (e.g., `npm` in Python).
 *   [x] **Read-Before-Write**: Architects are prompted to schedule `read_file` steps before `write_file` steps.
 
-### Phase 6: Tooling Ecosystem (🚧 Next Up)
-*   [x] **Hardwired Tools**: `ls`, `read_file`, `grep`.
+### Phase 6: The "Engineer-First" Adaptation (🚧 PRIORITY)
+We are refining the framework to match real-world software engineering flows.
+*   [ ] **Tiered Model Strategy**:
+    *   *Reasoning Tier* (e.g., o3-mini, R1) for Architecture & Decomposition.
+    *   *Coding Tier* (e.g., Sonnet 3.5, GPT-4o) for Code Generation.
+    *   *Fast Tier* (e.g., Flash, Haiku) for Tooling & Linting.
+*   [ ] **Adaptive Checkpointing**: Move away from rigid "commit-per-step".
+    *   *Small Tasks*: Single squash commit at completion.
+    *   *Large Tasks*: Intelligent milestone-based checkpoints (e.g., after "Backend Setup" is complete).
+*   [ ] **Non-Blocking Workflow**: Allow agents to run in Worktrees even if the main working directory is dirty (Auto-Stash or Ignore).
+*   [ ] **Continuous Sessions**: Implement proper session lifecycle management to allow starting new tasks without restarting the application.
+
+### Phase 7: "Ironclad" Reliability & Performance
+*   [ ] **Rust-Based AST Analysis**: Replace Regex linters with Tree-sitter in Rust for semantic "Red-Flagging" (detecting logic errors, not just syntax).
+*   [ ] **UI/Engine Decoupling**: Refactor `MakerEngine` to use a throttled event loop to prevent UI lock-ups during high-speed execution.
+*   [ ] **Virtualization**: Implement windowing for System Logs and Terminal to handle long-running sessions without memory bloat.
+
+### Phase 8: Tooling Ecosystem
 *   [ ] **User-Defined Tools**: UI to register custom CLI commands as tools available to agents.
 *   [ ] **Tool Permission System**: "Human-in-the-loop" approval for dangerous tools (e.g., `rm -rf`, `deploy`).
 
-### Phase 7: Adaptive Intelligence
-*   [ ] **Model Routing**: Configurable routing to use cheaper models (Flash/Haiku) for `read_file`/`ls` steps and powerful models (Pro/4o) for `write_code`.
-*   [ ] **Cost Estimation**: Real-time token usage tracking and cost projection per task.
+---
 
 ## 🦀 The "Rustification" Roadmap
 
