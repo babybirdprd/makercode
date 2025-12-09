@@ -148,4 +148,14 @@ On first launch, click the **Settings (⚙️)** icon to configure your LLM Prov
 
 ---
 
+@misc{meyerson2025solvingmillionstepllmtask,
+      title={Solving a Million-Step LLM Task with Zero Errors}, 
+      author={Elliot Meyerson and Giuseppe Paolo and Roberto Dailey and Hormoz Shahrzad and Olivier Francon and Conor F. Hayes and Xin Qiu and Babak Hodjat and Risto Miikkulainen},
+      year={2025},
+      eprint={2511.09030},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2511.09030}, 
+}
+
 *Built with ❤️ by the MakerCode Team.*
